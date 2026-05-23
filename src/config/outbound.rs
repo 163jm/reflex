@@ -514,7 +514,6 @@ pub struct TuicOutboundConfig {
     pub detour: Option<String>,
 }
 
-
 // ── Trojan ────────────────────────────────────────────────────────────────────
 
 /// Trojan 出站配置。
@@ -753,7 +752,6 @@ pub struct RealityDialConfig {
     pub alpn: Vec<String>,
     pub fingerprint: String,
 }
-
 
 pub fn parse_duration(s: &str) -> anyhow::Result<std::time::Duration> {
     let s = s.trim();

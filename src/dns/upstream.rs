@@ -194,7 +194,11 @@ impl DnsUpstream {
                     let addr = parse_addr(raw, 853)?;
                     let sni = cfg.sni.clone().unwrap_or_else(|| addr.ip().to_string());
                     let quic_cfg = build_doq_quic_config(cfg)?;
-                    UpstreamKind::Doq { addr, sni, quic_cfg }
+                    UpstreamKind::Doq {
+                        addr,
+                        sni,
+                        quic_cfg,
+                    }
                 }
                 #[cfg(not(feature = "outbound-net"))]
                 {
@@ -310,7 +314,12 @@ impl DnsUpstream {
                             "dns udp query routed via detour as TCP");
                         timeout(
                             self.timeout,
-                            tcp_query_via_detour(ob.as_ref(), addr.ip().to_string(), addr.port(), msg),
+                            tcp_query_via_detour(
+                                ob.as_ref(),
+                                addr.ip().to_string(),
+                                addr.port(),
+                                msg,
+                            ),
                         )
                         .await?
                     } else {
@@ -326,7 +335,12 @@ impl DnsUpstream {
                             "dns tcp query routed via detour");
                         timeout(
                             self.timeout,
-                            tcp_query_via_detour(ob.as_ref(), addr.ip().to_string(), addr.port(), msg),
+                            tcp_query_via_detour(
+                                ob.as_ref(),
+                                addr.ip().to_string(),
+                                addr.port(),
+                                msg,
+                            ),
                         )
                         .await?
                     } else {
@@ -336,7 +350,14 @@ impl DnsUpstream {
 
                 // ── DoH ───────────────────────────────────────────────────────
                 #[cfg(feature = "outbound-net")]
-                UpstreamKind::Doh { host, port, path, resolved_addr, tls_cfg, .. } => {
+                UpstreamKind::Doh {
+                    host,
+                    port,
+                    path,
+                    resolved_addr,
+                    tls_cfg,
+                    ..
+                } => {
                     let ip = resolve_or_cached(
                         resolved_addr,
                         host,
@@ -351,7 +372,14 @@ impl DnsUpstream {
                             "dns doh query routed via detour");
                         timeout(
                             self.timeout,
-                            doh_query_via_detour(ob.as_ref(), host, *port, path, tls_cfg.clone(), msg),
+                            doh_query_via_detour(
+                                ob.as_ref(),
+                                host,
+                                *port,
+                                path,
+                                tls_cfg.clone(),
+                                msg,
+                            ),
                         )
                         .await?
                     } else {
@@ -377,7 +405,14 @@ impl DnsUpstream {
                             "dns dot query routed via detour");
                         timeout(
                             self.timeout,
-                            dot_query_via_detour(ob.as_ref(), addr.ip().to_string(), addr.port(), sni, tls_cfg.clone(), msg),
+                            dot_query_via_detour(
+                                ob.as_ref(),
+                                addr.ip().to_string(),
+                                addr.port(),
+                                sni,
+                                tls_cfg.clone(),
+                                msg,
+                            ),
                         )
                         .await?
                     } else {
@@ -392,7 +427,11 @@ impl DnsUpstream {
 
                 // ── DoQ ───────────────────────────────────────────────────────
                 #[cfg(feature = "outbound-net")]
-                UpstreamKind::Doq { addr, sni, quic_cfg } => {
+                UpstreamKind::Doq {
+                    addr,
+                    sni,
+                    quic_cfg,
+                } => {
                     if self.detour.is_some() {
                         debug!(upstream=%self.tag,
                             "dns doq does not support TCP detour, falling back to direct");
@@ -458,9 +497,7 @@ fn build_rustls_client_config(
     let tls_config = if cfg.insecure {
         rustls::ClientConfig::builder()
             .dangerous()
-            .with_custom_certificate_verifier(std::sync::Arc::new(
-                crate::outbound::tls::NoVerifier,
-            ))
+            .with_custom_certificate_verifier(std::sync::Arc::new(crate::outbound::tls::NoVerifier))
             .with_no_client_auth()
     } else {
         rustls::ClientConfig::builder()
@@ -487,9 +524,7 @@ fn build_doq_quic_config(
     let mut tls_config = if cfg.insecure {
         rustls::ClientConfig::builder()
             .dangerous()
-            .with_custom_certificate_verifier(std::sync::Arc::new(
-                crate::outbound::tls::NoVerifier,
-            ))
+            .with_custom_certificate_verifier(std::sync::Arc::new(crate::outbound::tls::NoVerifier))
             .with_no_client_auth()
     } else {
         rustls::ClientConfig::builder()
@@ -516,7 +551,12 @@ fn build_doq_quic_config(
 // ── 协议实现：UDP ─────────────────────────────────────────────────────────────
 
 async fn udp_query(addr: SocketAddr, msg: Bytes) -> anyhow::Result<Bytes> {
-    let bind: SocketAddr = if addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" }.parse()?;
+    let bind: SocketAddr = if addr.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    }
+    .parse()?;
     let sock = UdpSocket::bind(bind).await?;
     sock.send_to(&msg, addr).await?;
     let mut buf = vec![0u8; 4096];
@@ -549,7 +589,8 @@ async fn udp_query_with_socket(
 // ── 协议实现：TCP ─────────────────────────────────────────────────────────────
 
 async fn tcp_query(addr: SocketAddr, msg: Bytes) -> anyhow::Result<Bytes> {
-    let mut stream = TcpStream::connect(addr).await
+    let mut stream = TcpStream::connect(addr)
+        .await
         .map_err(|e| anyhow::anyhow!("TCP connect to {addr} failed: {e}"))?;
     tcp_framed_exchange(&mut stream, msg).await
 }
@@ -573,9 +614,11 @@ async fn dot_query(
     tls_cfg: std::sync::Arc<rustls::ClientConfig>,
     msg: Bytes,
 ) -> anyhow::Result<Bytes> {
-    let tcp = TcpStream::connect(addr).await
+    let tcp = TcpStream::connect(addr)
+        .await
         .map_err(|e| anyhow::anyhow!("DoT TCP connect to {addr} failed: {e}"))?;
-    let mut tls = crate::outbound::tls::connect_tls(tcp, sni, tls_cfg).await
+    let mut tls = crate::outbound::tls::connect_tls(tcp, sni, tls_cfg)
+        .await
         .map_err(|e| anyhow::anyhow!("DoT TLS handshake with {sni} failed: {e}"))?;
     tcp_framed_exchange(&mut tls, msg).await
 }
@@ -605,13 +648,15 @@ async fn dot_tls_on_boxed(
     sni: &str,
     tls_cfg: std::sync::Arc<rustls::ClientConfig>,
 ) -> anyhow::Result<tokio_rustls::client::TlsStream<BoxStream>> {
-    use tokio_rustls::TlsConnector;
     use rustls::pki_types::ServerName;
+    use tokio_rustls::TlsConnector;
 
     let connector = TlsConnector::from(tls_cfg);
-    let server_name = ServerName::try_from(sni.to_string())
-        .map_err(|_| anyhow::anyhow!("invalid SNI: {sni}"))?;
-    let tls = connector.connect(server_name, BoxStream(stream)).await
+    let server_name =
+        ServerName::try_from(sni.to_string()).map_err(|_| anyhow::anyhow!("invalid SNI: {sni}"))?;
+    let tls = connector
+        .connect(server_name, BoxStream(stream))
+        .await
         .map_err(|e| anyhow::anyhow!("DoT TLS handshake via detour with {sni} failed: {e}"))?;
     Ok(tls)
 }
@@ -664,7 +709,12 @@ async fn doq_query(
     quic_cfg: std::sync::Arc<quinn::ClientConfig>,
     msg: Bytes,
 ) -> anyhow::Result<Bytes> {
-    let bind: SocketAddr = if addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" }.parse()?;
+    let bind: SocketAddr = if addr.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    }
+    .parse()?;
     let mut endpoint = quinn::Endpoint::client(bind)
         .map_err(|e| anyhow::anyhow!("DoQ endpoint bind failed: {e}"))?;
     endpoint.set_default_client_config((*quic_cfg).clone());
@@ -689,11 +739,14 @@ async fn doq_query(
         .map_err(|e| anyhow::anyhow!("DoQ stream finish failed: {e}"))?;
 
     // 读取响应
-    let resp_len = recv.read_u16().await
-        .map_err(|e| anyhow::anyhow!("DoQ read response length failed: {e}"))? as usize;
+    let resp_len =
+        recv.read_u16()
+            .await
+            .map_err(|e| anyhow::anyhow!("DoQ read response length failed: {e}"))? as usize;
     anyhow::ensure!(resp_len <= 65535, "DoQ response too large: {resp_len}");
     let mut buf = vec![0u8; resp_len];
-    recv.read_exact(&mut buf).await
+    recv.read_exact(&mut buf)
+        .await
         .map_err(|e| anyhow::anyhow!("DoQ read response body failed: {e}"))?;
 
     conn.close(quinn::VarInt::from_u32(0), b"");
@@ -714,7 +767,8 @@ async fn doh_query_direct(
     msg: Bytes,
 ) -> anyhow::Result<Bytes> {
     let addr = SocketAddr::new(ip, port);
-    let tcp = TcpStream::connect(addr).await
+    let tcp = TcpStream::connect(addr)
+        .await
         .map_err(|e| anyhow::anyhow!("DoH TCP connect to {addr} failed: {e}"))?;
 
     // 构建带 h2 ALPN 的 TLS 配置
@@ -722,7 +776,8 @@ async fn doh_query_direct(
     cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let cfg = std::sync::Arc::new(cfg);
 
-    let tls = crate::outbound::tls::connect_tls(tcp, host, cfg).await
+    let tls = crate::outbound::tls::connect_tls(tcp, host, cfg)
+        .await
         .map_err(|e| anyhow::anyhow!("DoH TLS handshake with {host} failed: {e}"))?;
 
     let negotiated = tls.get_ref().1.alpn_protocol();
@@ -749,7 +804,8 @@ async fn doh_query_via_detour(
     cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let cfg = std::sync::Arc::new(cfg);
 
-    let tls = dot_tls_on_boxed(tcp_stream, host, cfg).await
+    let tls = dot_tls_on_boxed(tcp_stream, host, cfg)
+        .await
         .map_err(|e| anyhow::anyhow!("DoH TLS handshake via detour with {host} failed: {e}"))?;
 
     let negotiated = tls.get_ref().1.alpn_protocol();
@@ -807,7 +863,8 @@ where
 {
     use h2::client;
 
-    let (send_req, conn) = client::handshake(stream).await
+    let (send_req, conn) = client::handshake(stream)
+        .await
         .map_err(|e| anyhow::anyhow!("h2 handshake failed: {e}"))?;
     // 在后台驱动连接
     tokio::spawn(async move {
@@ -840,7 +897,8 @@ where
         .send_data(msg, true)
         .map_err(|e| anyhow::anyhow!("h2 send_data failed: {e}"))?;
 
-    let mut response = resp_future.await
+    let mut response = resp_future
+        .await
         .map_err(|e| anyhow::anyhow!("h2 response failed: {e}"))?;
 
     let status = response.status();
@@ -867,10 +925,7 @@ fn parse_doh_http_response(resp: &[u8]) -> anyhow::Result<Bytes> {
         .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| anyhow::anyhow!("malformed DoH HTTP response: no header boundary"))?;
 
-    let status_line_end = resp
-        .iter()
-        .position(|&b| b == b'\r')
-        .unwrap_or(header_end);
+    let status_line_end = resp.iter().position(|&b| b == b'\r').unwrap_or(header_end);
     let status_line = std::str::from_utf8(&resp[..status_line_end]).unwrap_or("");
     anyhow::ensure!(
         status_line.contains("200"),
@@ -989,8 +1044,16 @@ impl FakeIpStore {
         cache_file: Option<Arc<CacheFile>>,
         cache_reader: Option<Arc<crate::experimental::CacheFileReader>>,
     ) -> anyhow::Result<Self> {
-        let inet4_net = cfg.inet4_range.as_deref().map(parse_ipv4_cidr).transpose()?;
-        let inet6_net = cfg.inet6_range.as_deref().map(parse_ipv6_cidr).transpose()?;
+        let inet4_net = cfg
+            .inet4_range
+            .as_deref()
+            .map(parse_ipv4_cidr)
+            .transpose()?;
+        let inet6_net = cfg
+            .inet6_range
+            .as_deref()
+            .map(parse_ipv6_cidr)
+            .transpose()?;
 
         if inet4_net.is_none() && inet6_net.is_none() {
             anyhow::bail!("fakeip: at least one of inet4_range or inet6_range must be set");
@@ -1062,17 +1125,32 @@ impl FakeIpStore {
             inet6_net,
             inner: Mutex::new(inner),
             cache_file,
-            exclude_domain: cfg.exclude_domain.iter().map(|d| d.to_ascii_lowercase()).collect(),
-            exclude_domain_suffix: cfg.exclude_domain_suffix.iter().map(|s| {
-                if s.starts_with('.') { s.to_ascii_lowercase() }
-                else { format!(".{}", s.to_ascii_lowercase()) }
-            }).collect(),
+            exclude_domain: cfg
+                .exclude_domain
+                .iter()
+                .map(|d| d.to_ascii_lowercase())
+                .collect(),
+            exclude_domain_suffix: cfg
+                .exclude_domain_suffix
+                .iter()
+                .map(|s| {
+                    if s.starts_with('.') {
+                        s.to_ascii_lowercase()
+                    } else {
+                        format!(".{}", s.to_ascii_lowercase())
+                    }
+                })
+                .collect(),
         })
     }
 
     pub fn diag_sizes(&self) -> (usize, usize, usize) {
         let inner = self.inner.lock().unwrap();
-        (inner.addr_to_domain.len(), inner.domain_to_v4.len(), inner.domain_to_v6.len())
+        (
+            inner.addr_to_domain.len(),
+            inner.domain_to_v4.len(),
+            inner.domain_to_v6.len(),
+        )
     }
 
     pub fn contains(&self, addr: std::net::IpAddr) -> bool {
@@ -1083,12 +1161,19 @@ impl FakeIpStore {
     }
 
     pub fn lookup(&self, addr: std::net::IpAddr) -> Option<String> {
-        self.inner.lock().unwrap().addr_to_domain.get(&addr).cloned()
+        self.inner
+            .lock()
+            .unwrap()
+            .addr_to_domain
+            .get(&addr)
+            .cloned()
     }
 
     pub fn is_excluded(&self, domain: &str) -> bool {
         let lower = domain.to_ascii_lowercase();
-        if self.exclude_domain.contains(&lower) { return true; }
+        if self.exclude_domain.contains(&lower) {
+            return true;
+        }
         for suffix in &self.exclude_domain_suffix {
             if lower.ends_with(suffix.as_str()) || lower == suffix.trim_start_matches('.') {
                 return true;
@@ -1104,7 +1189,9 @@ impl FakeIpStore {
             Some(t) => t,
             None => return make_noerror_empty(query),
         };
-        if qtype != 1 && qtype != 28 { return make_noerror_empty(query); }
+        if qtype != 1 && qtype != 28 {
+            return make_noerror_empty(query);
+        }
 
         let qname = match extract_qname(query) {
             Some(n) => n,
@@ -1132,38 +1219,58 @@ impl FakeIpStore {
     fn allocate_v4(&self, domain: &str) -> Option<Ipv4Addr> {
         let mut inner = self.inner.lock().unwrap();
         if let Some(&existing) = inner.domain_to_v4.get(domain) {
-            if let Some(ref cf) = self.cache_file { cf.touch_fakeip_entry(std::net::IpAddr::V4(existing)); }
+            if let Some(ref cf) = self.cache_file {
+                cf.touch_fakeip_entry(std::net::IpAddr::V4(existing));
+            }
             return Some(existing);
         }
         let (start, end) = self.inet4_net?;
         let current = inner.inet4_current?;
-        let next = if ipv4_next(current) >= end { ipv4_next(start) } else { ipv4_next(current) };
+        let next = if ipv4_next(current) >= end {
+            ipv4_next(start)
+        } else {
+            ipv4_next(current)
+        };
         inner.inet4_current = Some(next);
         if let Some(old_domain) = inner.addr_to_domain.remove(&std::net::IpAddr::V4(next)) {
             inner.domain_to_v4.remove(&old_domain);
         }
-        inner.addr_to_domain.insert(std::net::IpAddr::V4(next), domain.to_string());
+        inner
+            .addr_to_domain
+            .insert(std::net::IpAddr::V4(next), domain.to_string());
         inner.domain_to_v4.insert(domain.to_string(), next);
-        if let Some(ref cf) = self.cache_file { cf.store_fakeip_entry(std::net::IpAddr::V4(next), domain); }
+        if let Some(ref cf) = self.cache_file {
+            cf.store_fakeip_entry(std::net::IpAddr::V4(next), domain);
+        }
         Some(next)
     }
 
     fn allocate_v6(&self, domain: &str) -> Option<Ipv6Addr> {
         let mut inner = self.inner.lock().unwrap();
         if let Some(&existing) = inner.domain_to_v6.get(domain) {
-            if let Some(ref cf) = self.cache_file { cf.touch_fakeip_entry(std::net::IpAddr::V6(existing)); }
+            if let Some(ref cf) = self.cache_file {
+                cf.touch_fakeip_entry(std::net::IpAddr::V6(existing));
+            }
             return Some(existing);
         }
         let (start, end) = self.inet6_net?;
         let current = inner.inet6_current?;
-        let next = if ipv6_next(current) >= end { ipv6_next(start) } else { ipv6_next(current) };
+        let next = if ipv6_next(current) >= end {
+            ipv6_next(start)
+        } else {
+            ipv6_next(current)
+        };
         inner.inet6_current = Some(next);
         if let Some(old_domain) = inner.addr_to_domain.remove(&std::net::IpAddr::V6(next)) {
             inner.domain_to_v6.remove(&old_domain);
         }
-        inner.addr_to_domain.insert(std::net::IpAddr::V6(next), domain.to_string());
+        inner
+            .addr_to_domain
+            .insert(std::net::IpAddr::V6(next), domain.to_string());
         inner.domain_to_v6.insert(domain.to_string(), next);
-        if let Some(ref cf) = self.cache_file { cf.store_fakeip_entry(std::net::IpAddr::V6(next), domain); }
+        if let Some(ref cf) = self.cache_file {
+            cf.store_fakeip_entry(std::net::IpAddr::V6(next), domain);
+        }
         Some(next)
     }
 }
@@ -1179,7 +1286,9 @@ fn build_aaaa_response(query: &[u8], ip: Ipv6Addr) -> Bytes {
 }
 
 fn build_ip_response(query: &[u8], rtype: u16, rdata: &[u8]) -> Bytes {
-    if query.len() < 12 { return make_noerror_empty(query); }
+    if query.len() < 12 {
+        return make_noerror_empty(query);
+    }
     const TTL: u32 = 1;
     let mut resp = Vec::with_capacity(query.len() + 16 + rdata.len());
     resp.extend_from_slice(&query[..2]);
@@ -1201,30 +1310,54 @@ fn build_ip_response(query: &[u8], rtype: u16, rdata: &[u8]) -> Bytes {
 // ── CIDR 解析 ────────────────────────────────────────────────────────────────
 
 fn parse_ipv4_cidr(s: &str) -> anyhow::Result<(Ipv4Addr, Ipv4Addr)> {
-    let (addr_str, prefix_str) = s.split_once('/').ok_or_else(|| anyhow::anyhow!("invalid IPv4 CIDR: {s}"))?;
-    let addr: Ipv4Addr = addr_str.parse().map_err(|_| anyhow::anyhow!("invalid IPv4 address in CIDR: {s}"))?;
-    let prefix: u32 = prefix_str.parse().map_err(|_| anyhow::anyhow!("invalid prefix length in CIDR: {s}"))?;
+    let (addr_str, prefix_str) = s
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("invalid IPv4 CIDR: {s}"))?;
+    let addr: Ipv4Addr = addr_str
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid IPv4 address in CIDR: {s}"))?;
+    let prefix: u32 = prefix_str
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid prefix length in CIDR: {s}"))?;
     anyhow::ensure!(prefix <= 32, "IPv4 prefix length must be ≤ 32: {s}");
-    let mask = if prefix == 0 { 0u32 } else { !0u32 << (32 - prefix) };
+    let mask = if prefix == 0 {
+        0u32
+    } else {
+        !0u32 << (32 - prefix)
+    };
     let net = u32::from(addr) & mask;
     let bcast = net | !mask;
     Ok((Ipv4Addr::from(net), Ipv4Addr::from(bcast)))
 }
 
 fn parse_ipv6_cidr(s: &str) -> anyhow::Result<(Ipv6Addr, Ipv6Addr)> {
-    let (addr_str, prefix_str) = s.split_once('/').ok_or_else(|| anyhow::anyhow!("invalid IPv6 CIDR: {s}"))?;
-    let addr: Ipv6Addr = addr_str.parse().map_err(|_| anyhow::anyhow!("invalid IPv6 address in CIDR: {s}"))?;
-    let prefix: u32 = prefix_str.parse().map_err(|_| anyhow::anyhow!("invalid prefix length in CIDR: {s}"))?;
+    let (addr_str, prefix_str) = s
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("invalid IPv6 CIDR: {s}"))?;
+    let addr: Ipv6Addr = addr_str
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid IPv6 address in CIDR: {s}"))?;
+    let prefix: u32 = prefix_str
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid prefix length in CIDR: {s}"))?;
     anyhow::ensure!(prefix <= 128, "IPv6 prefix length must be ≤ 128: {s}");
     let raw = u128::from(addr);
-    let mask = if prefix == 0 { 0u128 } else { !0u128 << (128 - prefix) };
+    let mask = if prefix == 0 {
+        0u128
+    } else {
+        !0u128 << (128 - prefix)
+    };
     let net = raw & mask;
     let last = net | !mask;
     Ok((Ipv6Addr::from(net), Ipv6Addr::from(last)))
 }
 
-fn ipv4_next(addr: Ipv4Addr) -> Ipv4Addr { Ipv4Addr::from(u32::from(addr).wrapping_add(1)) }
-fn ipv6_next(addr: Ipv6Addr) -> Ipv6Addr { Ipv6Addr::from(u128::from(addr).wrapping_add(1)) }
+fn ipv4_next(addr: Ipv4Addr) -> Ipv4Addr {
+    Ipv4Addr::from(u32::from(addr).wrapping_add(1))
+}
+fn ipv6_next(addr: Ipv6Addr) -> Ipv6Addr {
+    Ipv6Addr::from(u128::from(addr).wrapping_add(1))
+}
 
 // ── 测试 ──────────────────────────────────────────────────────────────────────
 
@@ -1234,31 +1367,46 @@ mod tests {
 
     #[test]
     fn parse_addr_bare() {
-        assert_eq!(parse_addr("8.8.8.8", 53).unwrap(), "8.8.8.8:53".parse().unwrap());
+        assert_eq!(
+            parse_addr("8.8.8.8", 53).unwrap(),
+            "8.8.8.8:53".parse().unwrap()
+        );
     }
     #[test]
     fn parse_addr_with_port() {
-        assert_eq!(parse_addr("8.8.8.8:5353", 53).unwrap(), "8.8.8.8:5353".parse().unwrap());
+        assert_eq!(
+            parse_addr("8.8.8.8:5353", 53).unwrap(),
+            "8.8.8.8:5353".parse().unwrap()
+        );
     }
     #[test]
     fn parse_addr_ipv6() {
-        assert_eq!(parse_addr("[::1]:53", 53).unwrap(), "[::1]:53".parse().unwrap());
+        assert_eq!(
+            parse_addr("[::1]:53", 53).unwrap(),
+            "[::1]:53".parse().unwrap()
+        );
     }
 
     #[test]
     fn parse_doh_standard() {
         let (h, p, path) = parse_doh_url("https://1.1.1.1/dns-query").unwrap();
-        assert_eq!(h, "1.1.1.1"); assert_eq!(p, 443); assert_eq!(path, "/dns-query");
+        assert_eq!(h, "1.1.1.1");
+        assert_eq!(p, 443);
+        assert_eq!(path, "/dns-query");
     }
     #[test]
     fn parse_doh_custom_port() {
         let (h, p, path) = parse_doh_url("https://dns.example.com:8443/resolve").unwrap();
-        assert_eq!(h, "dns.example.com"); assert_eq!(p, 8443); assert_eq!(path, "/resolve");
+        assert_eq!(h, "dns.example.com");
+        assert_eq!(p, 8443);
+        assert_eq!(path, "/resolve");
     }
     #[test]
     fn parse_doh_no_path() {
         let (h, p, path) = parse_doh_url("https://dns.example.com").unwrap();
-        assert_eq!(h, "dns.example.com"); assert_eq!(p, 443); assert_eq!(path, "/");
+        assert_eq!(h, "dns.example.com");
+        assert_eq!(p, 443);
+        assert_eq!(path, "/");
     }
     #[test]
     fn parse_doh_bad_scheme() {
@@ -1269,7 +1417,8 @@ mod tests {
     fn rcode_refused() {
         let q = &[0xAB, 0xCD, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
         let r = rcode_reply(q, RcodeAction::Refused);
-        assert_eq!(r[0], 0xAB); assert_eq!(r[3] & 0x0F, 5);
+        assert_eq!(r[0], 0xAB);
+        assert_eq!(r[3] & 0x0F, 5);
     }
     #[test]
     fn rcode_nxdomain() {
@@ -1285,7 +1434,9 @@ mod tests {
     use crate::config::dns::FakeIpConfig;
 
     fn make_fakeip_query(name: &str, qtype: u16) -> Vec<u8> {
-        let mut msg = vec![0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let mut msg = vec![
+            0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
         for label in name.split('.') {
             msg.push(label.len() as u8);
             msg.extend_from_slice(label.as_bytes());
@@ -1302,7 +1453,8 @@ mod tests {
             inet6_range: None,
             exclude_domain: vec![],
             exclude_domain_suffix: vec![],
-        }).unwrap()
+        })
+        .unwrap()
     }
 
     #[test]
@@ -1320,7 +1472,7 @@ mod tests {
         let q = make_fakeip_query("same.example.com", 1);
         let r1 = store.reply(&q);
         let r2 = store.reply(&q);
-        assert_eq!(&r1[r1.len()-4..], &r2[r2.len()-4..]);
+        assert_eq!(&r1[r1.len() - 4..], &r2[r2.len() - 4..]);
     }
 
     #[test]
@@ -1328,14 +1480,14 @@ mod tests {
         let store = new_store_v4();
         let r1 = store.reply(&make_fakeip_query("a.com", 1));
         let r2 = store.reply(&make_fakeip_query("b.com", 1));
-        assert_ne!(&r1[r1.len()-4..], &r2[r2.len()-4..]);
+        assert_ne!(&r1[r1.len() - 4..], &r2[r2.len() - 4..]);
     }
 
     #[test]
     fn fakeip_reverse_lookup() {
         let store = new_store_v4();
         let resp = store.reply(&make_fakeip_query("lookup.example.com", 1));
-        let ip_bytes: [u8; 4] = resp[resp.len()-4..].try_into().unwrap();
+        let ip_bytes: [u8; 4] = resp[resp.len() - 4..].try_into().unwrap();
         let ip = std::net::IpAddr::V4(Ipv4Addr::from(ip_bytes));
         assert!(store.contains(ip));
         assert_eq!(store.lookup(ip).as_deref(), Some("lookup.example.com"));
@@ -1364,11 +1516,12 @@ mod tests {
             inet6_range: Some("fc00::/18".into()),
             exclude_domain: vec![],
             exclude_domain_suffix: vec![],
-        }).unwrap();
+        })
+        .unwrap();
         let resp = store.reply(&make_fakeip_query("v6only.example.com", 28));
         assert_eq!(resp[3] & 0x0F, 0);
         assert_eq!(u16::from_be_bytes([resp[6], resp[7]]), 1);
-        let ip_bytes: [u8; 16] = resp[resp.len()-16..].try_into().unwrap();
+        let ip_bytes: [u8; 16] = resp[resp.len() - 16..].try_into().unwrap();
         let ip = std::net::IpAddr::V6(Ipv6Addr::from(ip_bytes));
         assert!(store.contains(ip));
         assert_eq!(store.lookup(ip).as_deref(), Some("v6only.example.com"));
@@ -1377,9 +1530,12 @@ mod tests {
     #[test]
     fn fakeip_missing_config_errors() {
         assert!(FakeIpStore::new(&FakeIpConfig {
-            inet4_range: None, inet6_range: None,
-            exclude_domain: vec![], exclude_domain_suffix: vec![],
-        }).is_err());
+            inet4_range: None,
+            inet6_range: None,
+            exclude_domain: vec![],
+            exclude_domain_suffix: vec![],
+        })
+        .is_err());
     }
 
     #[test]

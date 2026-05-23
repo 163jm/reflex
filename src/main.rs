@@ -63,8 +63,8 @@ fn cmd_ruleset(args: &[String]) -> anyhow::Result<()> {
     let input = &args[1];
     let output = parse_output_flag(&args[2..])?;
 
-    let src = fs::read_to_string(input)
-        .map_err(|e| anyhow::anyhow!("cannot read '{}': {}", input, e))?;
+    let src =
+        fs::read_to_string(input).map_err(|e| anyhow::anyhow!("cannot read '{}': {}", input, e))?;
 
     // 自动判断格式：JSON → sing-box rule-set，其他 → 文本规则集
     let compiled = if input.ends_with(".json") || src.trim_start().starts_with('{') {
@@ -218,7 +218,10 @@ fn resolve_config_and_base(
         // 只有 -c，base_dir = config 所在目录
         (Some(cfg), None) => {
             let p = PathBuf::from(&cfg);
-            let base = p.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+            let base = p
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
             Ok((cfg, base))
         }
         // -d 和 -c 都给了：config 路径相对于 base_dir 解析（已是绝对路径则直接用）
@@ -282,7 +285,7 @@ async fn run_proxy(args: Vec<String>) -> anyhow::Result<()> {
         .expect("failed to install rustls crypto provider");
 
     let mut config_path: Option<String> = None;
-    let mut base_dir:    Option<PathBuf> = None;
+    let mut base_dir: Option<PathBuf> = None;
     let mut log_level = None::<String>;
 
     let mut i = 1;
@@ -294,9 +297,10 @@ async fn run_proxy(args: Vec<String>) -> anyhow::Result<()> {
             }
             "--dir" | "-d" => {
                 i += 1;
-                let dir = args.get(i).map(PathBuf::from).ok_or_else(|| {
-                    anyhow::anyhow!("'-d' requires a directory path")
-                })?;
+                let dir = args
+                    .get(i)
+                    .map(PathBuf::from)
+                    .ok_or_else(|| anyhow::anyhow!("'-d' requires a directory path"))?;
                 if !dir.is_dir() {
                     anyhow::bail!("'{}' is not a directory", dir.display());
                 }
@@ -360,9 +364,9 @@ fn init_tracing(level: &str) {
         let max = match level {
             "trace" => tracing::Level::TRACE,
             "debug" => tracing::Level::DEBUG,
-            "warn"  => tracing::Level::WARN,
+            "warn" => tracing::Level::WARN,
             "error" => tracing::Level::ERROR,
-            "off"   => {
+            "off" => {
                 tracing::subscriber::set_global_default(
                     tracing::subscriber::NoSubscriber::default(),
                 )
@@ -394,8 +398,8 @@ impl tracing::Subscriber for SimpleSubscriber {
         eprintln!("[{:<5}] {}: {msg}", meta.level(), meta.target());
         let level_str = match *meta.level() {
             tracing::Level::ERROR => "error",
-            tracing::Level::WARN  => "warning",
-            tracing::Level::INFO  => "info",
+            tracing::Level::WARN => "warning",
+            tracing::Level::INFO => "info",
             tracing::Level::DEBUG => "debug",
             tracing::Level::TRACE => "debug",
         };

@@ -314,7 +314,8 @@ impl CompiledRule {
         };
 
         let action = if rule.sniff {
-            let sniff_types = rule.sniff_type
+            let sniff_types = rule
+                .sniff_type
                 .iter()
                 .filter_map(|s| crate::app::sniff::SniffType::parse(s))
                 .collect();

@@ -97,7 +97,10 @@ impl TrojanOutbound {
         let url = if self.config.tls.enabled {
             format!("wss://{sni}{}", ws_cfg.path)
         } else {
-            format!("ws://{}:{}{}", self.config.server, self.config.server_port, ws_cfg.path)
+            format!(
+                "ws://{}:{}{}",
+                self.config.server, self.config.server_port, ws_cfg.path
+            )
         };
 
         let mut request = url.into_client_request()?;
@@ -115,7 +118,9 @@ impl TrojanOutbound {
         }
 
         let connector = if self.config.tls.enabled {
-            Some(tokio_tungstenite::Connector::Rustls(self.tls_config.clone()))
+            Some(tokio_tungstenite::Connector::Rustls(
+                self.tls_config.clone(),
+            ))
         } else {
             None
         };
@@ -178,7 +183,11 @@ impl TrojanOutbound {
                     &self.config.server,
                     self.config.server_port,
                     xhttp_cfg,
-                    if self.config.tls.enabled { Some(&self.config.tls) } else { None },
+                    if self.config.tls.enabled {
+                        Some(&self.config.tls)
+                    } else {
+                        None
+                    },
                     &HashMap::new(),
                 )
                 .await?;
@@ -190,10 +199,13 @@ impl TrojanOutbound {
     // ── 辅助 ──────────────────────────────────────────────────────────────────
 
     async fn resolve_server(&self) -> anyhow::Result<SocketAddr> {
-        tokio::net::lookup_host(format!("{}:{}", self.config.server, self.config.server_port))
-            .await?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("DNS failed for {}", self.config.server))
+        tokio::net::lookup_host(format!(
+            "{}:{}",
+            self.config.server, self.config.server_port
+        ))
+        .await?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("DNS failed for {}", self.config.server))
     }
 
     fn tls_sni(&self) -> &str {
@@ -294,7 +306,8 @@ impl Outbound for TrojanOutbound {
 
             // len 在 skip_buf 的倒数第 4、3 字节（addr 之后）
             let len_offset = addr_len + 2; // 跳过 addr + port 之后是 len
-            let data_len = u16::from_be_bytes([skip_buf[len_offset], skip_buf[len_offset + 1]]) as usize;
+            let data_len =
+                u16::from_be_bytes([skip_buf[len_offset], skip_buf[len_offset + 1]]) as usize;
 
             if data_len == 0 {
                 break;
@@ -307,9 +320,7 @@ impl Outbound for TrojanOutbound {
                 Err(_) => break,
             }
 
-            let _ = reply_tx
-                .send((bytes::Bytes::from(data), src))
-                .await;
+            let _ = reply_tx.send((bytes::Bytes::from(data), src)).await;
         }
 
         Ok(())
@@ -416,7 +427,11 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for TrojanTcpStream<S> {
             match this.inner.poll_write(cx, &combined) {
                 Poll::Ready(Ok(n)) => {
                     // 报告写出的用户数据字节数（握手头不计入）
-                    Poll::Ready(Ok(if n >= header.len() { n - header.len() } else { 0 }))
+                    Poll::Ready(Ok(if n >= header.len() {
+                        n - header.len()
+                    } else {
+                        0
+                    }))
                 }
                 Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
                 Poll::Pending => {
@@ -490,10 +505,7 @@ where
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(None) => return Poll::Ready(Ok(())),
                 Poll::Ready(Some(Err(e))) => {
-                    return Poll::Ready(Err(std::io::Error::new(
-                        std::io::ErrorKind::BrokenPipe,
-                        e,
-                    )))
+                    return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e)))
                 }
                 Poll::Ready(Some(Ok(msg))) => match msg {
                     Message::Binary(data) => {

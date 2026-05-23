@@ -9,9 +9,8 @@ use serde::Deserialize;
 
 use crate::config::outbound::{
     Hysteria2OutboundConfig, OutboundConfig, RealityConfig, TlsConfig, TrojanOutboundConfig,
-    TrojanTransportConfig, TuicOutboundConfig, VlessOutboundConfig,
-    VlessTlsConfig, VlessTransportConfig, VmessOutboundConfig, VmessTransportConfig,
-    WsTransportConfig,
+    TrojanTransportConfig, TuicOutboundConfig, VlessOutboundConfig, VlessTlsConfig,
+    VlessTransportConfig, VmessOutboundConfig, VmessTransportConfig, WsTransportConfig,
 };
 
 /// 解析 Clash YAML 文本，返回 (节点名, OutboundConfig) 列表。
@@ -222,7 +221,12 @@ fn build_trojan(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
         .ok_or_else(|| anyhow::anyhow!("trojan: missing password"))?;
 
     let tls_enabled = p.tls.unwrap_or(true);
-    let tls = build_tls(tls_enabled, p.skip_cert_verify, p.sni.clone(), p.alpn.clone());
+    let tls = build_tls(
+        tls_enabled,
+        p.skip_cert_verify,
+        p.sni.clone(),
+        p.alpn.clone(),
+    );
 
     let transport = match p.network.as_deref() {
         Some("ws") => Some(TrojanTransportConfig::Ws(build_ws_transport(p.ws_opts))),
@@ -410,7 +414,10 @@ proxies:
             assert_eq!(c.password, "mypassword");
             assert!(c.tls.enabled);
             assert_eq!(c.tls.server_name.as_deref(), Some("jp.example.com"));
-            assert!(matches!(c.transport, None | Some(TrojanTransportConfig::Tcp(_))));
+            assert!(matches!(
+                c.transport,
+                None | Some(TrojanTransportConfig::Tcp(_))
+            ));
         } else {
             panic!("expected Trojan outbound");
         }
@@ -440,7 +447,10 @@ proxies:
             assert!(c.tls.insecure);
             if let Some(TrojanTransportConfig::Ws(ref ws)) = c.transport {
                 assert_eq!(ws.path, "/trojan");
-                assert_eq!(ws.headers.get("Host").map(|s| s.as_str()), Some("sg.example.com"));
+                assert_eq!(
+                    ws.headers.get("Host").map(|s| s.as_str()),
+                    Some("sg.example.com")
+                );
             } else {
                 panic!("expected WS transport");
             }
