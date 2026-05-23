@@ -74,11 +74,7 @@ impl VmessOutbound {
                     &self.config.server,
                     self.config.server_port,
                     xhttp_cfg,
-                    if self.config.tls.enabled {
-                        Some(&self.config.tls)
-                    } else {
-                        None
-                    },
+                    if self.config.tls.enabled { Some(&self.config.tls) } else { None },
                     &HashMap::new(),
                 )
                 .await?;

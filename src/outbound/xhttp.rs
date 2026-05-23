@@ -151,7 +151,8 @@ impl XhttpShared {
 async fn connect_stream_one(shared: Arc<XhttpShared>) -> anyhow::Result<XhttpStream> {
     let (body_tx, body_rx) = mpsc::channel::<Bytes>(64);
     let body = reqwest::Body::wrap_stream(
-        tokio_stream::wrappers::ReceiverStream::new(body_rx).map(Ok::<Bytes, std::io::Error>),
+        tokio_stream::wrappers::ReceiverStream::new(body_rx)
+            .map(Ok::<Bytes, std::io::Error>),
     );
 
     let url = shared.stream_url();
@@ -188,7 +189,8 @@ async fn connect_stream_up_down(shared: Arc<XhttpShared>) -> anyhow::Result<Xhtt
     // 2. 建立上行 POST（流式 body）
     let (body_tx, body_rx) = mpsc::channel::<Bytes>(64);
     let body = reqwest::Body::wrap_stream(
-        tokio_stream::wrappers::ReceiverStream::new(body_rx).map(Ok::<Bytes, std::io::Error>),
+        tokio_stream::wrappers::ReceiverStream::new(body_rx)
+            .map(Ok::<Bytes, std::io::Error>),
     );
     let up_url = shared.stream_url();
     {
@@ -429,12 +431,6 @@ fn build_http_client(
     tls: Option<&TlsConfig>,
     _cfg: &XhttpTransportConfig,
 ) -> anyhow::Result<reqwest::Client> {
-    // 注意：reqwest 0.12 不暴露自定义 connector 的公开 API，无法在此直接对
-    // HTTP 连接的底层 socket 调用 setsockopt(SO_MARK)。
-    // xhttp 出站的 routing_mark 需要在系统层面处理，例如：
-    //   iptables -t mangle -A OUTPUT -m owner --uid-owner <proxy_uid> -j MARK --set-mark <mark>
-    // 或使用 cgroup v2 + iptables -m cgroup。
-    // 其余出站（TCP 直连 / QUIC）均已在 socket 创建时设置 SO_MARK。
     let mut builder = reqwest::ClientBuilder::new()
         .tcp_nodelay(true)
         .pool_max_idle_per_host(16);
@@ -449,6 +445,8 @@ fn build_http_client(
                 let cert = reqwest::Certificate::from_pem(&pem)?;
                 builder = builder.add_root_certificate(cert);
             }
+        } else {
+            // 明文模式，不配置 TLS
         }
     }
 

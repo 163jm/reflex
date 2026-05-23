@@ -97,8 +97,6 @@ pub struct Dispatcher {
     dns_resolver: Arc<DnsResolver>,
     stats: Arc<Stats>,
     conn_tracker: Arc<ConnectionTracker>,
-    /// 若为 false，来自 tproxy/redir 的 IPv6 连接直接丢弃。
-    allow_ipv6: bool,
 }
 
 impl Dispatcher {
@@ -110,18 +108,6 @@ impl Dispatcher {
         stats: Arc<Stats>,
         conn_tracker: Arc<ConnectionTracker>,
     ) -> Self {
-        Self::with_ipv6(router, outbound_mgr, dns_tx, dns_resolver, stats, conn_tracker, true)
-    }
-
-    pub fn with_ipv6(
-        router: Arc<Router>,
-        outbound_mgr: Arc<OutboundManager>,
-        dns_tx: DnsQueryTx,
-        dns_resolver: Arc<DnsResolver>,
-        stats: Arc<Stats>,
-        conn_tracker: Arc<ConnectionTracker>,
-        allow_ipv6: bool,
-    ) -> Self {
         Self {
             router,
             outbound_mgr,
@@ -129,22 +115,11 @@ impl Dispatcher {
             dns_resolver,
             stats,
             conn_tracker,
-            allow_ipv6,
         }
     }
 
     pub async fn run_tcp(self, mut rx: mpsc::Receiver<InboundTcpStream>) {
         while let Some(mut conn) = rx.recv().await {
-            // ── IPv6 过滤（global.ipv6 = false 时拒绝 IPv6 目标）──────────────
-            if !self.allow_ipv6 {
-                if let Target::Socket(addr) = &conn.target {
-                    if addr.is_ipv6() {
-                        debug!(peer=%addr, "drop ipv6 tcp (global.ipv6=false)");
-                        continue;
-                    }
-                }
-            }
-
             // ── FakeIP 反向查找（参照 sing-box route.go routeConnection）──────────
             // 若目标 IP 落在 FakeIP 段内，立即还原为域名目标，再进入路由匹配。
             if let Target::Socket(addr) = &conn.target {
@@ -311,16 +286,6 @@ impl Dispatcher {
             tokio::select! {
                 maybe_packet = rx.recv() => {
                     let Some(mut packet) = maybe_packet else { break };
-
-                    // ── IPv6 过滤（global.ipv6 = false 时拒绝 IPv6 目标）────
-                    if !self.allow_ipv6 {
-                        if let Target::Socket(addr) = &packet.target {
-                            if addr.is_ipv6() {
-                                debug!(src=%packet.src, dst=%addr, "drop ipv6 udp (global.ipv6=false)");
-                                continue;
-                            }
-                        }
-                    }
 
                     // ── FakeIP 反向查找 ──────────────────────────────────────
                     if let Target::Socket(addr) = &packet.target {

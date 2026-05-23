@@ -24,48 +24,9 @@ use crate::dns::DnsResolver;
 use crate::inbound::{InboundTcpStream, InboundUdpPacket, Target};
 use serde::Serialize;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-
-// ── 全局 SO_MARK 值 ───────────────────────────────────────────────────────────
-
-/// 全局出站 SO_MARK，0 表示不设置。
-/// 由 `set_global_routing_mark` 在启动时初始化一次，之后只读。
-static GLOBAL_ROUTING_MARK: AtomicU32 = AtomicU32::new(0);
-
-/// 在应用启动时调用，将 `global.routing_mark` 写入全局变量。
-pub fn set_global_routing_mark(mark: u32) {
-    GLOBAL_ROUTING_MARK.store(mark, Ordering::Relaxed);
-}
-
-/// 对任意已创建的 socket（通过 `AsRawFd`）设置 SO_MARK。
-/// mark == 0 时跳过，避免无谓的系统调用。
-/// 仅在 Linux 上有效；其他平台编译为空操作。
-pub fn apply_mark<S: std::os::unix::io::AsRawFd>(sock: &S) -> std::io::Result<()> {
-    let mark = GLOBAL_ROUTING_MARK.load(Ordering::Relaxed);
-    if mark == 0 {
-        return Ok(());
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let raw = sock.as_raw_fd();
-        let ret = unsafe {
-            libc::setsockopt(
-                raw,
-                libc::SOL_SOCKET,
-                libc::SO_MARK,
-                &mark as *const u32 as *const libc::c_void,
-                std::mem::size_of::<u32>() as libc::socklen_t,
-            )
-        };
-        if ret != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
 
 // ── TCP 连接辅助 ──────────────────────────────────────────────────────────────
 
@@ -74,7 +35,7 @@ pub fn apply_mark<S: std::os::unix::io::AsRawFd>(sock: &S) -> std::io::Result<()
 const TCP_KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(300);
 const TCP_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(75);
 
-/// 对 TcpStream 统一设置 nodelay + keepalive + SO_MARK（若已配置）。
+/// 对 TcpStream 统一设置 nodelay + keepalive。
 /// keepalive 能及时检测并清理死连接（网络中断、NAT 超时等），
 /// 避免连接长期占用资源。
 pub fn set_tcp_opts(stream: &TcpStream) -> std::io::Result<()> {
@@ -84,7 +45,6 @@ pub fn set_tcp_opts(stream: &TcpStream) -> std::io::Result<()> {
         .with_time(TCP_KEEPALIVE_IDLE)
         .with_interval(TCP_KEEPALIVE_INTERVAL);
     sock.set_tcp_keepalive(&ka)?;
-    apply_mark(stream)?;
     Ok(())
 }
 
@@ -250,44 +210,3 @@ pub async fn resolve_target_with_dns(
 }
 #[cfg(feature = "outbound-net")]
 pub mod reality;
-
-// ── QUIC endpoint 辅助（hy2 / tuic 共用）────────────────────────────────────
-
-/// 创建一个已打上 SO_MARK 的 `quinn::Endpoint`（仅客户端）。
-///
-/// `quinn::Endpoint::client()` 内部自行创建 UDP socket，无法打 mark。
-/// 这里改为手动创建 `std::net::UdpSocket`，打 mark 后再通过
-/// `quinn::Endpoint::new()` 传入，从而让 QUIC 流量也受 routing_mark 控制。
-#[cfg(feature = "outbound-net")]
-pub fn make_quic_endpoint(
-    bind: std::net::SocketAddr,
-    client_config: quinn::ClientConfig,
-) -> anyhow::Result<quinn::Endpoint> {
-    use socket2::{Domain, Protocol, Socket, Type};
-
-    // 手动创建 UDP socket 并打 mark
-    let domain = if bind.is_ipv6() {
-        Domain::IPV6
-    } else {
-        Domain::IPV4
-    };
-    let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
-    sock.set_reuse_address(true)?;
-    sock.set_nonblocking(true)?;
-    sock.bind(&bind.into())?;
-    apply_mark(&sock)?;
-
-    let std_sock: std::net::UdpSocket = sock.into();
-
-    // quinn 0.11：Endpoint::new(config, server_config, socket, runtime)
-    // 客户端 server_config = None
-    let runtime = Arc::new(quinn::TokioRuntime);
-    let mut endpoint = quinn::Endpoint::new(
-        quinn::EndpointConfig::default(),
-        None,
-        std_sock,
-        runtime,
-    )?;
-    endpoint.set_default_client_config(client_config);
-    Ok(endpoint)
-}

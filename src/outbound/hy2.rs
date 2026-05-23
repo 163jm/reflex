@@ -51,7 +51,7 @@ use tracing::{debug, warn};
 use crate::{
     config::outbound::Hysteria2OutboundConfig,
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{make_quic_endpoint, relay, Outbound},
+    outbound::{relay, Outbound},
 };
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
@@ -176,7 +176,8 @@ impl Hy2Outbound {
         }
         .parse()?;
 
-        let mut endpoint = make_quic_endpoint(bind, (*self.quic_config).clone())?;
+        let mut endpoint = quinn::Endpoint::client(bind)?;
+        endpoint.set_default_client_config((*self.quic_config).clone());
 
         let timeout = Duration::from_secs(10); // 固定 10s，与 sing-box 默认行为一致
         let conn = tokio::time::timeout(timeout, endpoint.connect(addr, sni)?)
