@@ -1,4 +1,4 @@
-name: Build reflex / mipsle-softfloat
+name: Build mipsle
 
 on:
   workflow_dispatch:
