@@ -151,8 +151,7 @@ impl XhttpShared {
 async fn connect_stream_one(shared: Arc<XhttpShared>) -> anyhow::Result<XhttpStream> {
     let (body_tx, body_rx) = mpsc::channel::<Bytes>(64);
     let body = reqwest::Body::wrap_stream(
-        tokio_stream::wrappers::ReceiverStream::new(body_rx)
-            .map(Ok::<Bytes, std::io::Error>),
+        tokio_stream::wrappers::ReceiverStream::new(body_rx).map(Ok::<Bytes, std::io::Error>),
     );
 
     let url = shared.stream_url();
@@ -189,8 +188,7 @@ async fn connect_stream_up_down(shared: Arc<XhttpShared>) -> anyhow::Result<Xhtt
     // 2. 建立上行 POST（流式 body）
     let (body_tx, body_rx) = mpsc::channel::<Bytes>(64);
     let body = reqwest::Body::wrap_stream(
-        tokio_stream::wrappers::ReceiverStream::new(body_rx)
-            .map(Ok::<Bytes, std::io::Error>),
+        tokio_stream::wrappers::ReceiverStream::new(body_rx).map(Ok::<Bytes, std::io::Error>),
     );
     let up_url = shared.stream_url();
     {
