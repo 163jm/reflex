@@ -1,4 +1,4 @@
-name: Release
+name: 测试
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
       prerelease:
         description: "Mark as pre-release"
         required: false
-        default: false
+        default: true
         type: boolean
 
 env:
