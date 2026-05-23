@@ -44,14 +44,14 @@ pub struct DnsResolver {
 
 impl DnsResolver {
     pub fn from_config(config: &DnsConfig) -> anyhow::Result<Self> {
-        Self::from_config_full(config, &HashMap::new(), None, None, None)
+        Self::from_config_full(config, &HashMap::new(), None, None, None, 0)
     }
 
     pub fn from_config_with_rulesets(
         config: &DnsConfig,
         rulesets: &HashMap<String, Arc<RuleSet>>,
     ) -> anyhow::Result<Self> {
-        Self::from_config_full(config, rulesets, None, None, None)
+        Self::from_config_full(config, rulesets, None, None, None, 0)
     }
 
     pub fn from_config_with_rulesets_and_outbounds(
@@ -59,7 +59,7 @@ impl DnsResolver {
         rulesets: &HashMap<String, Arc<RuleSet>>,
         outbounds: Option<&HashMap<String, Arc<dyn Outbound>>>,
     ) -> anyhow::Result<Self> {
-        Self::from_config_full(config, rulesets, outbounds, None, None)
+        Self::from_config_full(config, rulesets, outbounds, None, None, 0)
     }
 
     /// 最完整构造：支持 CacheFile 注入（fakeip 持久化 + DNS 缓存持久化）。
@@ -69,6 +69,7 @@ impl DnsResolver {
         outbounds: Option<&HashMap<String, Arc<dyn Outbound>>>,
         cache_writer: Option<Arc<CacheFile>>,
         cache_reader: Option<Arc<CacheFileReader>>,
+        routing_mark: u32,
     ) -> anyhow::Result<Self> {
         // 验证 optimistic 和 disable_cache 不能同时开
         if config.optimistic_timeout > 0 && config.disable_cache {
@@ -132,7 +133,7 @@ impl DnsResolver {
                     cf,
                     cr,
                     domain_resolver,
-                )?),
+                )?.with_mark(routing_mark)),
             );
         }
 

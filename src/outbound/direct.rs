@@ -20,7 +20,7 @@ use crate::{
     config::outbound::{BlockOutboundConfig, DirectOutboundConfig},
     dns::DnsResolver,
     inbound::{InboundTcpStream, InboundUdpPacket},
-    outbound::{relay, resolve_target_with_dns, set_tcp_opts, Outbound, OutboundStatus},
+    outbound::{apply_mark_to_tcp, apply_mark_to_udp, relay, resolve_target_with_dns, set_tcp_opts, Outbound, OutboundStatus},
 };
 
 // ── Direct ────────────────────────────────────────────────────────────────────
@@ -29,6 +29,8 @@ pub struct DirectOutbound {
     config: DirectOutboundConfig,
     /// 内部 DNS 解析器，用于域名解析（替代系统 getaddrinfo）
     resolver: Option<Arc<DnsResolver>>,
+    /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
+    routing_mark: u32,
 }
 
 impl DirectOutbound {
@@ -36,6 +38,7 @@ impl DirectOutbound {
         Self {
             config,
             resolver: None,
+            routing_mark: 0,
         }
     }
 
@@ -43,7 +46,13 @@ impl DirectOutbound {
         Self {
             config,
             resolver: Some(resolver),
+            routing_mark: 0,
         }
+    }
+
+    pub fn with_mark(mut self, mark: u32) -> Self {
+        self.routing_mark = mark;
+        self
     }
 
     /// 向已解析的目标地址建立 TCP 连接，尊重 `bind_address` 配置。
@@ -66,6 +75,7 @@ impl DirectOutbound {
             TcpStream::connect(addr).await?
         };
         set_tcp_opts(&stream)?;
+        apply_mark_to_tcp(&stream, self.routing_mark)?;
         Ok(stream)
     }
 
@@ -87,6 +97,7 @@ impl DirectOutbound {
         } else {
             tokio::net::UdpSocket::bind("0.0.0.0:0").await?
         };
+        apply_mark_to_udp(&sock, self.routing_mark)?;
         Ok(sock)
     }
 }

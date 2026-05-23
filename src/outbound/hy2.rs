@@ -51,7 +51,7 @@ use tracing::{debug, warn};
 use crate::{
     config::outbound::Hysteria2OutboundConfig,
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{relay, Outbound},
+    outbound::{apply_mark_to_endpoint, relay, Outbound},
 };
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
@@ -118,6 +118,8 @@ pub struct Hy2Outbound {
     udp_session_id: AtomicU32,
     /// 连接池：复用已建立的 QUIC 连接，避免每次请求重新握手
     cached_conn: Arc<Mutex<Option<CachedConn>>>,
+    /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
+    routing_mark: u32,
 }
 
 impl Hy2Outbound {
@@ -128,7 +130,13 @@ impl Hy2Outbound {
             quic_config,
             udp_session_id: AtomicU32::new(0),
             cached_conn: Arc::new(Mutex::new(None)),
+            routing_mark: 0,
         })
+    }
+
+    pub fn with_mark(mut self, mark: u32) -> Self {
+        self.routing_mark = mark;
+        self
     }
 
     /// 获取或新建 QUIC 连接（连接池）
@@ -177,6 +185,7 @@ impl Hy2Outbound {
         .parse()?;
 
         let mut endpoint = quinn::Endpoint::client(bind)?;
+        apply_mark_to_endpoint(&endpoint, self.routing_mark)?;
         endpoint.set_default_client_config((*self.quic_config).clone());
 
         let timeout = Duration::from_secs(10); // 固定 10s，与 sing-box 默认行为一致

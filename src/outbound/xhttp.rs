@@ -431,6 +431,8 @@ fn build_http_client(
     tls: Option<&TlsConfig>,
     _cfg: &XhttpTransportConfig,
 ) -> anyhow::Result<reqwest::Client> {
+    // 注意：xhttp 使用 reqwest::Client 进行 HTTP/2 连接，reqwest 不暴露原始 fd，
+    // 因此无法对底层 socket 设置 SO_MARK。如需 mark，请使用其他传输方式（TCP/WS/gRPC）。
     let mut builder = reqwest::ClientBuilder::new()
         .tcp_nodelay(true)
         .pool_max_idle_per_host(16);

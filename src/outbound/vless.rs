@@ -34,7 +34,7 @@ use crate::{
         VlessOutboundConfig, VlessTransportConfig, WsTransportConfig,
     },
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{relay, set_tcp_opts, tls::build_client_config, Outbound},
+    outbound::{apply_mark_to_tcp, relay, set_tcp_opts, tls::build_client_config, Outbound},
 };
 
 use super::reality::reality_connect;
@@ -42,6 +42,8 @@ pub struct VlessOutbound {
     config: VlessOutboundConfig,
     /// rustls 配置（仅 TLS 模式使用）
     tls_config: Arc<rustls::ClientConfig>,
+    /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
+    routing_mark: u32,
 }
 
 impl VlessOutbound {
@@ -71,7 +73,12 @@ impl VlessOutbound {
                 )
             }
         };
-        Ok(Self { config, tls_config })
+        Ok(Self { config, tls_config, routing_mark: 0 })
+    }
+
+    pub fn with_mark(mut self, mark: u32) -> Self {
+        self.routing_mark = mark;
+        self
     }
 
     /// 解析 UUID 字符串为 16 字节
@@ -130,6 +137,7 @@ impl VlessOutbound {
 
         let tcp = TcpStream::connect(addr).await?;
         set_tcp_opts(&tcp)?;
+        apply_mark_to_tcp(&tcp, self.routing_mark)?;
 
         let url = if tls_enabled {
             format!("wss://{sni}{}", ws_cfg.path)
@@ -172,6 +180,7 @@ impl VlessOutbound {
 
         let tcp = TcpStream::connect(addr).await?;
         set_tcp_opts(&tcp)?;
+        apply_mark_to_tcp(&tcp, self.routing_mark)?;
 
         crate::outbound::tls::connect_tls(tcp, sni, self.tls_config.clone()).await
     }
@@ -192,6 +201,7 @@ impl VlessOutbound {
 
         let tcp = TcpStream::connect(addr).await?;
         set_tcp_opts(&tcp)?;
+        apply_mark_to_tcp(&tcp, self.routing_mark)?;
 
         let cfg = crate::config::outbound::RealityDialConfig {
             public_key: reality.public_key.clone(),
@@ -285,6 +295,7 @@ impl VlessOutbound {
                     .ok_or_else(|| anyhow::anyhow!("DNS failed for {server}"))?;
                 let tcp = TcpStream::connect(addr).await?;
                 set_tcp_opts(&tcp)?;
+                apply_mark_to_tcp(&tcp, self.routing_mark)?;
                 Ok(Box::new(VlessTcpStream::new(tcp, header)))
             }
         }

@@ -98,6 +98,7 @@ impl App {
                 None, // outbounds 还未就绪
                 cache_writer.clone(),
                 cache_reader.clone(),
+                config.global.routing_mark,
             )?;
             if !config.global.ipv6 {
                 r.strategy = ResolveStrategy::Ipv4Only;
@@ -146,6 +147,7 @@ impl App {
             cache_writer.clone(),
             cache_reader.clone(),
             provider_manager.clone(),
+            config.global.routing_mark,
         )?);
         info!(
             "outbound manager: {} outbounds registered",
@@ -250,6 +252,7 @@ impl App {
                 Some(outbound_mgr.as_map()),
                 cache_writer,
                 cache_reader,
+                config.global.routing_mark,
             )?;
             if !config.global.ipv6 {
                 r.strategy = ResolveStrategy::Ipv4Only;

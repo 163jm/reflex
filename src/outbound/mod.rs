@@ -28,6 +28,87 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
+// ── SO_MARK 工具 ──────────────────────────────────────────────────────────────
+
+/// 对已创建的 TCP socket（tokio::net::TcpStream）设置 SO_MARK。
+/// 仅 Linux 生效；其他平台为空操作（编译通过，无运行时开销）。
+#[allow(unused_variables)]
+pub fn apply_mark_to_tcp(stream: &TcpStream, mark: u32) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        if mark != 0 {
+            use std::os::unix::io::AsRawFd;
+            let fd = stream.as_raw_fd();
+            let ret = unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_MARK,
+                    &mark as *const u32 as *const libc::c_void,
+                    std::mem::size_of::<u32>() as libc::socklen_t,
+                )
+            };
+            if ret != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 对已创建的 UDP socket（tokio::net::UdpSocket）设置 SO_MARK。
+/// 仅 Linux 生效；其他平台为空操作。
+#[allow(unused_variables)]
+pub fn apply_mark_to_udp(sock: &tokio::net::UdpSocket, mark: u32) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        if mark != 0 {
+            use std::os::unix::io::AsRawFd;
+            let fd = sock.as_raw_fd();
+            let ret = unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_MARK,
+                    &mark as *const u32 as *const libc::c_void,
+                    std::mem::size_of::<u32>() as libc::socklen_t,
+                )
+            };
+            if ret != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 对 quinn Endpoint 的底层 UDP socket 设置 SO_MARK（在 bind 之后、connect 之前调用）。
+/// 仅在 Linux + outbound-net feature 下编译，其他平台/特性为空操作。
+#[cfg(feature = "outbound-net")]
+#[allow(unused_variables)]
+pub fn apply_mark_to_endpoint(endpoint: &quinn::Endpoint, mark: u32) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        if mark != 0 {
+            use std::os::unix::io::AsRawFd;
+            let fd = endpoint.as_raw_fd();
+            let ret = unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_MARK,
+                    &mark as *const u32 as *const libc::c_void,
+                    std::mem::size_of::<u32>() as libc::socklen_t,
+                )
+            };
+            if ret != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── TCP 连接辅助 ──────────────────────────────────────────────────────────────
 
 /// 参照 sing-box constant/timeout.go：

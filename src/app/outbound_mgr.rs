@@ -27,7 +27,7 @@ impl OutboundManager {
         configs: &[OutboundConfig],
         resolver: Option<Arc<DnsResolver>>,
     ) -> anyhow::Result<Self> {
-        Self::from_config_full(configs, resolver, None, None, None)
+        Self::from_config_full(configs, resolver, None, None, None, 0)
     }
 
     /// 完整构造函数，支持 CacheFile 持久化和 ProviderManager。
@@ -37,6 +37,7 @@ impl OutboundManager {
         cache_writer: Option<Arc<CacheFile>>,
         cache_reader: Option<Arc<CacheFileReader>>,
         provider_manager: Option<Arc<ProviderManager>>,
+        routing_mark: u32,
     ) -> anyhow::Result<Self> {
         let registry: OutboundRegistry = Arc::new(std::sync::OnceLock::new());
         let mut map: HashMap<String, Arc<dyn Outbound>> = HashMap::new();
@@ -49,14 +50,14 @@ impl OutboundManager {
             let ob: Arc<dyn Outbound> = match cfg {
                 OutboundConfig::Direct(c) => {
                     if let Some(ref r) = resolver {
-                        Arc::new(DirectOutbound::with_resolver(c.clone(), r.clone()))
+                        Arc::new(DirectOutbound::with_resolver(c.clone(), r.clone()).with_mark(routing_mark))
                     } else {
-                        Arc::new(DirectOutbound::new(c.clone()))
+                        Arc::new(DirectOutbound::new(c.clone()).with_mark(routing_mark))
                     }
                 }
                 OutboundConfig::Block(c) => Arc::new(BlockOutbound::new(c.clone())),
                 OutboundConfig::Socks(c) => {
-                    Arc::new(crate::outbound::socks::SocksOutbound::new(c.clone())?)
+                    Arc::new(crate::outbound::socks::SocksOutbound::new(c.clone())?.with_mark(routing_mark))
                 }
                 OutboundConfig::Selector(c) => Arc::new(SelectorOutbound::new(
                     c.clone(),
@@ -71,42 +72,42 @@ impl OutboundManager {
 
                 #[cfg(feature = "outbound-net")]
                 OutboundConfig::Shadowsocks(c) => Arc::new(
-                    crate::outbound::shadowsocks::ShadowsocksOutbound::new(c.clone())?,
+                    crate::outbound::shadowsocks::ShadowsocksOutbound::new(c.clone())?.with_mark(routing_mark),
                 ),
                 #[cfg(not(feature = "outbound-net"))]
                 OutboundConfig::Shadowsocks(c) => fallback_block(&c.tag, "Shadowsocks"),
 
                 #[cfg(feature = "outbound-net")]
                 OutboundConfig::Trojan(c) => {
-                    Arc::new(crate::outbound::trojan::TrojanOutbound::new(c.clone())?)
+                    Arc::new(crate::outbound::trojan::TrojanOutbound::new(c.clone())?.with_mark(routing_mark))
                 }
                 #[cfg(not(feature = "outbound-net"))]
                 OutboundConfig::Trojan(c) => fallback_block(&c.tag, "Trojan"),
 
                 #[cfg(feature = "outbound-net")]
                 OutboundConfig::Vless(c) => {
-                    Arc::new(crate::outbound::vless::VlessOutbound::new(c.clone())?)
+                    Arc::new(crate::outbound::vless::VlessOutbound::new(c.clone())?.with_mark(routing_mark))
                 }
                 #[cfg(not(feature = "outbound-net"))]
                 OutboundConfig::Vless(c) => fallback_block(&c.tag, "VLESS"),
 
                 #[cfg(feature = "outbound-net")]
                 OutboundConfig::Vmess(c) => {
-                    Arc::new(crate::outbound::vmess::VmessOutbound::new(c.clone())?)
+                    Arc::new(crate::outbound::vmess::VmessOutbound::new(c.clone())?.with_mark(routing_mark))
                 }
                 #[cfg(not(feature = "outbound-net"))]
                 OutboundConfig::Vmess(c) => fallback_block(&c.tag, "VMess"),
 
                 #[cfg(feature = "outbound-net")]
                 OutboundConfig::Hysteria2(c) => {
-                    Arc::new(crate::outbound::hy2::Hy2Outbound::new(c.clone())?)
+                    Arc::new(crate::outbound::hy2::Hy2Outbound::new(c.clone())?.with_mark(routing_mark))
                 }
                 #[cfg(not(feature = "outbound-net"))]
                 OutboundConfig::Hysteria2(c) => fallback_block(&c.tag, "Hysteria2"),
 
                 #[cfg(feature = "outbound-net")]
                 OutboundConfig::Tuic(c) => {
-                    Arc::new(crate::outbound::tuic::TuicOutbound::new(c.clone())?)
+                    Arc::new(crate::outbound::tuic::TuicOutbound::new(c.clone())?.with_mark(routing_mark))
                 }
                 #[cfg(not(feature = "outbound-net"))]
                 OutboundConfig::Tuic(c) => fallback_block(&c.tag, "TUIC"),

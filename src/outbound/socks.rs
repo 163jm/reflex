@@ -21,7 +21,7 @@ use tracing::{debug, warn};
 use crate::{
     config::outbound::{SocksOutboundConfig, SocksVersion},
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{relay, resolve_target, set_tcp_opts, Outbound, OutboundStatus},
+    outbound::{apply_mark_to_tcp, apply_mark_to_udp, relay, resolve_target, set_tcp_opts, Outbound, OutboundStatus},
 };
 
 // ── SOCKS 常量 ────────────────────────────────────────────────────────────────
@@ -56,12 +56,19 @@ const SOCKS4_REP_SUCCESS: u8 = 0x5A;
 pub struct SocksOutbound {
     config: SocksOutboundConfig,
     version: SocksVersion,
+    /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
+    routing_mark: u32,
 }
 
 impl SocksOutbound {
     pub fn new(config: SocksOutboundConfig) -> anyhow::Result<Self> {
         let version = config.parsed_version()?;
-        Ok(Self { config, version })
+        Ok(Self { config, version, routing_mark: 0 })
+    }
+
+    pub fn with_mark(mut self, mark: u32) -> Self {
+        self.routing_mark = mark;
+        self
     }
 
     // ── 连接到代理服务器 ──────────────────────────────────────────────────────
@@ -81,6 +88,7 @@ impl SocksOutbound {
         })?;
         let stream = TcpStream::connect(addr).await?;
         set_tcp_opts(&stream)?;
+        apply_mark_to_tcp(&stream, self.routing_mark)?;
         Ok(stream)
     }
 
@@ -346,6 +354,7 @@ impl SocksOutbound {
             "0.0.0.0:0"
         };
         let udp = tokio::net::UdpSocket::bind(local_bind).await?;
+        apply_mark_to_udp(&udp, self.routing_mark)?;
         udp.send_to(&dgram, relay_addr).await?;
 
         let mut buf = vec![0u8; 65535];

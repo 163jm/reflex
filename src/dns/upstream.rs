@@ -43,6 +43,8 @@ pub struct DnsUpstream {
     udp_socket_v4: Arc<Mutex<Option<Arc<UdpSocket>>>>,
     /// 直连 UDP 上游的复用 socket（IPv6）
     udp_socket_v6: Arc<Mutex<Option<Arc<UdpSocket>>>>,
+    /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
+    pub routing_mark: u32,
 }
 
 pub enum UpstreamKind {
@@ -241,7 +243,14 @@ impl DnsUpstream {
             domain_resolver,
             udp_socket_v4: Arc::new(Mutex::new(None)),
             udp_socket_v6: Arc::new(Mutex::new(None)),
+            routing_mark: 0,
         })
+    }
+
+    /// 设置 SO_MARK，返回 Self（用于链式调用）。
+    pub fn with_mark(mut self, mark: u32) -> Self {
+        self.routing_mark = mark;
+        self
     }
 
     /// 获取或创建与 addr 对应协议族的持久 UDP socket。
@@ -263,7 +272,9 @@ impl DnsUpstream {
             "0.0.0.0:0"
         }
         .parse()?;
-        let sock = Arc::new(UdpSocket::bind(bind).await?);
+        let sock = UdpSocket::bind(bind).await?;
+        crate::outbound::apply_mark_to_udp(&sock, self.routing_mark)?;
+        let sock = Arc::new(sock);
         {
             let mut guard = slot.lock().unwrap();
             if guard.is_none() {
@@ -324,7 +335,7 @@ impl DnsUpstream {
                         .await?
                     } else {
                         let sock = self.get_or_create_udp_socket(*addr).await?;
-                        timeout(self.timeout, udp_query_with_socket(sock, *addr, msg)).await?
+                        timeout(self.timeout, udp_query_with_socket(sock, *addr, msg, self.routing_mark)).await?
                     }
                 }
 
@@ -344,7 +355,7 @@ impl DnsUpstream {
                         )
                         .await?
                     } else {
-                        timeout(self.timeout, tcp_query(*addr, msg)).await?
+                        timeout(self.timeout, tcp_query(*addr, msg, self.routing_mark)).await?
                     }
                 }
 
@@ -416,7 +427,7 @@ impl DnsUpstream {
                         )
                         .await?
                     } else {
-                        timeout(self.timeout, dot_query(*addr, sni, tls_cfg.clone(), msg)).await?
+                        timeout(self.timeout, dot_query(*addr, sni, tls_cfg.clone(), msg, self.routing_mark)).await?
                     }
                 }
 
@@ -436,7 +447,7 @@ impl DnsUpstream {
                         debug!(upstream=%self.tag,
                             "dns doq does not support TCP detour, falling back to direct");
                     }
-                    timeout(self.timeout, doq_query(*addr, sni, quic_cfg.clone(), msg)).await?
+                    timeout(self.timeout, doq_query(*addr, sni, quic_cfg.clone(), msg, self.routing_mark)).await?
                 }
 
                 #[cfg(not(feature = "outbound-net"))]
@@ -550,7 +561,7 @@ fn build_doq_quic_config(
 
 // ── 协议实现：UDP ─────────────────────────────────────────────────────────────
 
-async fn udp_query(addr: SocketAddr, msg: Bytes) -> anyhow::Result<Bytes> {
+async fn udp_query(addr: SocketAddr, msg: Bytes, mark: u32) -> anyhow::Result<Bytes> {
     let bind: SocketAddr = if addr.is_ipv6() {
         "[::]:0"
     } else {
@@ -558,12 +569,14 @@ async fn udp_query(addr: SocketAddr, msg: Bytes) -> anyhow::Result<Bytes> {
     }
     .parse()?;
     let sock = UdpSocket::bind(bind).await?;
+    #[cfg(target_os = "linux")]
+    crate::outbound::apply_mark_to_udp(&sock, mark)?;
     sock.send_to(&msg, addr).await?;
     let mut buf = vec![0u8; 4096];
     let (n, _) = sock.recv_from(&mut buf).await?;
     if n >= 3 && (buf[2] & 0x02) != 0 {
         debug!(addr=%addr, "dns udp TC bit, retry over TCP");
-        return tcp_query(addr, msg).await;
+        return tcp_query(addr, msg, mark).await;
     }
     Ok(Bytes::copy_from_slice(&buf[..n]))
 }
@@ -572,26 +585,29 @@ async fn udp_query_with_socket(
     sock: Arc<UdpSocket>,
     addr: SocketAddr,
     msg: Bytes,
+    mark: u32,
 ) -> anyhow::Result<Bytes> {
     sock.send_to(&msg, addr).await?;
     let mut buf = vec![0u8; 4096];
     let (n, from) = sock.recv_from(&mut buf).await?;
     if from != addr {
-        return udp_query(addr, msg).await;
+        return udp_query(addr, msg, mark).await;
     }
     if n >= 3 && (buf[2] & 0x02) != 0 {
         debug!(addr=%addr, "dns udp TC bit, retry over TCP");
-        return tcp_query(addr, msg).await;
+        return tcp_query(addr, msg, mark).await;
     }
     Ok(Bytes::copy_from_slice(&buf[..n]))
 }
 
 // ── 协议实现：TCP ─────────────────────────────────────────────────────────────
 
-async fn tcp_query(addr: SocketAddr, msg: Bytes) -> anyhow::Result<Bytes> {
+async fn tcp_query(addr: SocketAddr, msg: Bytes, mark: u32) -> anyhow::Result<Bytes> {
     let mut stream = TcpStream::connect(addr)
         .await
         .map_err(|e| anyhow::anyhow!("TCP connect to {addr} failed: {e}"))?;
+    #[cfg(target_os = "linux")]
+    crate::outbound::apply_mark_to_tcp(&stream, mark)?;
     tcp_framed_exchange(&mut stream, msg).await
 }
 
@@ -708,6 +724,7 @@ async fn doq_query(
     sni: &str,
     quic_cfg: std::sync::Arc<quinn::ClientConfig>,
     msg: Bytes,
+    mark: u32,
 ) -> anyhow::Result<Bytes> {
     let bind: SocketAddr = if addr.is_ipv6() {
         "[::]:0"
@@ -717,6 +734,7 @@ async fn doq_query(
     .parse()?;
     let mut endpoint = quinn::Endpoint::client(bind)
         .map_err(|e| anyhow::anyhow!("DoQ endpoint bind failed: {e}"))?;
+    crate::outbound::apply_mark_to_endpoint(&endpoint, mark)?;
     endpoint.set_default_client_config((*quic_cfg).clone());
 
     let conn = endpoint

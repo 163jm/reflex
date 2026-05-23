@@ -46,7 +46,7 @@ use tracing::{debug, warn};
 use crate::{
     config::outbound::TuicOutboundConfig,
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{relay, AsyncReadWrite, Outbound, OutboundStatus},
+    outbound::{apply_mark_to_endpoint, relay, AsyncReadWrite, Outbound, OutboundStatus},
 };
 
 // ── 协议常量 ──────────────────────────────────────────────────────────────────
@@ -82,6 +82,8 @@ pub struct TuicOutbound {
     /// UDP session ID 计数器
     udp_session: AtomicU16,
     cached: Arc<Mutex<Option<CachedConn>>>,
+    /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
+    routing_mark: u32,
 }
 
 impl TuicOutbound {
@@ -96,7 +98,13 @@ impl TuicOutbound {
             token,
             udp_session: AtomicU16::new(0),
             cached: Arc::new(Mutex::new(None)),
+            routing_mark: 0,
         })
+    }
+
+    pub fn with_mark(mut self, mark: u32) -> Self {
+        self.routing_mark = mark;
+        self
     }
 
     // ── 连接管理 ─────────────────────────────────────────────────────────────
@@ -142,6 +150,7 @@ impl TuicOutbound {
         }
         .parse()?;
         let mut endpoint = quinn::Endpoint::client(bind)?;
+        apply_mark_to_endpoint(&endpoint, self.routing_mark)?;
         endpoint.set_default_client_config((*self.quic_config).clone());
 
         let conn = tokio::time::timeout(Duration::from_secs(10), endpoint.connect(addr, sni)?)

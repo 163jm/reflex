@@ -24,7 +24,7 @@ use crate::{
     config::outbound::{VmessOutboundConfig, VmessTransportConfig, WsTransportConfig},
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
     outbound::{
-        relay, set_tcp_opts, tls::build_client_config, AsyncReadWrite, Outbound, OutboundStatus,
+        apply_mark_to_tcp, relay, set_tcp_opts, tls::build_client_config, AsyncReadWrite, Outbound, OutboundStatus,
     },
 };
 
@@ -43,6 +43,8 @@ pub struct VmessOutbound {
     tls_config: Arc<rustls::ClientConfig>,
     user_key: [u8; 16],
     security: u8,
+    /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
+    routing_mark: u32,
 }
 
 impl VmessOutbound {
@@ -56,7 +58,13 @@ impl VmessOutbound {
             tls_config,
             user_key,
             security,
+            routing_mark: 0,
         })
+    }
+
+    pub fn with_mark(mut self, mark: u32) -> Self {
+        self.routing_mark = mark;
+        self
     }
 
     // ── 建立底层连接 ────────────────────────────────────────────────────────
@@ -93,6 +101,7 @@ impl VmessOutbound {
             .ok_or_else(|| anyhow::anyhow!("DNS failed for {server}"))?;
         let tcp = TcpStream::connect(addr).await?;
         set_tcp_opts(&tcp)?;
+        apply_mark_to_tcp(&tcp, self.routing_mark)?;
         if self.config.tls.enabled {
             use crate::outbound::tls::connect_tls;
             let sni = self
@@ -126,6 +135,7 @@ impl VmessOutbound {
             .ok_or_else(|| anyhow::anyhow!("DNS failed for {server}"))?;
         let tcp = TcpStream::connect(addr).await?;
         set_tcp_opts(&tcp)?;
+        apply_mark_to_tcp(&tcp, self.routing_mark)?;
         let scheme = if self.config.tls.enabled { "wss" } else { "ws" };
         let url = format!("{scheme}://{sni}{}", ws_cfg.path);
         let mut request = url.into_client_request()?;

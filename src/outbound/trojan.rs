@@ -29,7 +29,7 @@ use tracing::debug;
 use crate::{
     config::outbound::{TrojanOutboundConfig, TrojanTransportConfig, WsTransportConfig},
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{relay, set_tcp_opts, tls::build_client_config, Outbound},
+    outbound::{apply_mark_to_tcp, relay, set_tcp_opts, tls::build_client_config, Outbound},
 };
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
@@ -54,6 +54,8 @@ pub struct TrojanOutbound {
     key: [u8; KEY_LEN],
     /// rustls 配置（TLS 模式有效）
     tls_config: Arc<rustls::ClientConfig>,
+    /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
+    routing_mark: u32,
 }
 
 impl TrojanOutbound {
@@ -64,7 +66,13 @@ impl TrojanOutbound {
             config,
             key,
             tls_config,
+            routing_mark: 0,
         })
+    }
+
+    pub fn with_mark(mut self, mark: u32) -> Self {
+        self.routing_mark = mark;
+        self
     }
 
     // ── 连接建立 ──────────────────────────────────────────────────────────────
@@ -74,6 +82,7 @@ impl TrojanOutbound {
         let addr = self.resolve_server().await?;
         let tcp = TcpStream::connect(addr).await?;
         set_tcp_opts(&tcp)?;
+        apply_mark_to_tcp(&tcp, self.routing_mark)?;
         Ok(tcp)
     }
 
@@ -93,6 +102,7 @@ impl TrojanOutbound {
         let addr = self.resolve_server().await?;
         let tcp = TcpStream::connect(addr).await?;
         set_tcp_opts(&tcp)?;
+        apply_mark_to_tcp(&tcp, self.routing_mark)?;
 
         let url = if self.config.tls.enabled {
             format!("wss://{sni}{}", ws_cfg.path)

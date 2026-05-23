@@ -41,7 +41,7 @@ use tracing::debug;
 use crate::{
     config::outbound::ShadowsocksOutboundConfig,
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{set_tcp_opts, Outbound, OutboundStatus},
+    outbound::{apply_mark_to_tcp, apply_mark_to_udp, set_tcp_opts, Outbound, OutboundStatus},
 };
 
 // ── 加密方法 ──────────────────────────────────────────────────────────────────
@@ -282,9 +282,11 @@ async fn ss_connect(
     subkey: Vec<u8>,
     salt: Vec<u8>,
     first_payload: Vec<u8>,
+    routing_mark: u32,
 ) -> anyhow::Result<(SsReader, SsWriter)> {
     let stream = TcpStream::connect(server_addr).await?;
     set_tcp_opts(&stream)?;
+    apply_mark_to_tcp(&stream, routing_mark)?;
 
     let (rd, wr) = tokio::io::split(stream);
     let mut writer = SsWriter {
@@ -612,6 +614,8 @@ pub struct ShadowsocksOutbound {
     /// 传统 AEAD：EVP_BytesToKey 派生的 master key；
     /// AEAD-2022：base64 解码的 PSK。
     key_material: Vec<u8>,
+    /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
+    routing_mark: u32,
 }
 
 impl ShadowsocksOutbound {
@@ -636,7 +640,12 @@ impl ShadowsocksOutbound {
             evp_bytes_to_key(config.password.as_bytes(), method.key_len())
         };
 
-        Ok(Self { config, method, key_material })
+        Ok(Self { config, method, key_material, routing_mark: 0 })
+    }
+
+    pub fn with_mark(mut self, mark: u32) -> Self {
+        self.routing_mark = mark;
+        self
     }
 
     async fn server_addr(&self) -> anyhow::Result<SocketAddr> {
@@ -674,6 +683,7 @@ impl ShadowsocksOutbound {
         if self.method == Method::None {
             let stream = TcpStream::connect(server_addr).await?;
             set_tcp_opts(&stream)?;
+            apply_mark_to_tcp(&stream, self.routing_mark)?;
             let (rd, mut wr) = tokio::io::split(stream);
             wr.write_all(&first_payload).await?;
             let reader = SsReader { inner: rd, dec: AeadCipher::new(Method::None, Vec::new()) };
@@ -683,7 +693,7 @@ impl ShadowsocksOutbound {
 
         let salt = self.random_salt();
         let subkey = self.derive_subkey(&salt);
-        ss_connect(server_addr, self.method, subkey, salt, first_payload).await
+        ss_connect(server_addr, self.method, subkey, salt, first_payload, self.routing_mark).await
     }
 
     /// 通过 XHTTP 传输建立 Shadowsocks 连接，返回双工异步 IO
@@ -769,6 +779,7 @@ impl Outbound for ShadowsocksOutbound {
         let server_addr = self.server_addr().await?;
         let local_bind = if server_addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
         let udp = UdpSocket::bind(local_bind).await?;
+        apply_mark_to_udp(&udp, self.routing_mark)?;
         udp.connect(server_addr).await?;
 
         // 构建并发送加密 UDP 包：[salt][enc(addr+payload)+tag]
