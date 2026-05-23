@@ -174,6 +174,7 @@ fn set_outbound_tag(ob: &mut OutboundConfig, tag: &str) {
         OutboundConfig::Trojan(c) => c.tag = tag.to_string(),
         OutboundConfig::Direct(c) => c.tag = tag.to_string(),
         OutboundConfig::Block(c) => c.tag = tag.to_string(),
+        OutboundConfig::Socks(c) => c.tag = tag.to_string(),
         OutboundConfig::Selector(c) => c.tag = tag.to_string(),
         OutboundConfig::UrlTest(c) => c.tag = tag.to_string(),
     }
