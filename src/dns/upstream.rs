@@ -27,7 +27,7 @@ use tracing::debug;
 
 use crate::config::dns::{DnsProtocol, DnsServerConfig, RcodeAction};
 use crate::dns::{make_noerror_empty, make_nxdomain, make_refused};
-use crate::outbound::Outbound;
+use crate::outbound::{apply_mark, Outbound};
 
 // ── 主结构 ────────────────────────────────────────────────────────────────────
 
@@ -264,6 +264,7 @@ impl DnsUpstream {
         }
         .parse()?;
         let sock = Arc::new(UdpSocket::bind(bind).await?);
+        apply_mark(sock.as_ref())?;
         {
             let mut guard = slot.lock().unwrap();
             if guard.is_none() {
@@ -558,6 +559,7 @@ async fn udp_query(addr: SocketAddr, msg: Bytes) -> anyhow::Result<Bytes> {
     }
     .parse()?;
     let sock = UdpSocket::bind(bind).await?;
+    apply_mark(&sock)?;
     sock.send_to(&msg, addr).await?;
     let mut buf = vec![0u8; 4096];
     let (n, _) = sock.recv_from(&mut buf).await?;
@@ -592,6 +594,7 @@ async fn tcp_query(addr: SocketAddr, msg: Bytes) -> anyhow::Result<Bytes> {
     let mut stream = TcpStream::connect(addr)
         .await
         .map_err(|e| anyhow::anyhow!("TCP connect to {addr} failed: {e}"))?;
+    apply_mark(&stream)?;
     tcp_framed_exchange(&mut stream, msg).await
 }
 
@@ -617,6 +620,7 @@ async fn dot_query(
     let tcp = TcpStream::connect(addr)
         .await
         .map_err(|e| anyhow::anyhow!("DoT TCP connect to {addr} failed: {e}"))?;
+    apply_mark(&tcp)?;
     let mut tls = crate::outbound::tls::connect_tls(tcp, sni, tls_cfg)
         .await
         .map_err(|e| anyhow::anyhow!("DoT TLS handshake with {sni} failed: {e}"))?;
@@ -715,9 +719,8 @@ async fn doq_query(
         "0.0.0.0:0"
     }
     .parse()?;
-    let mut endpoint = quinn::Endpoint::client(bind)
+    let mut endpoint = crate::outbound::make_quic_endpoint(bind, (*quic_cfg).clone())
         .map_err(|e| anyhow::anyhow!("DoQ endpoint bind failed: {e}"))?;
-    endpoint.set_default_client_config((*quic_cfg).clone());
 
     let conn = endpoint
         .connect(addr, sni)
@@ -770,6 +773,7 @@ async fn doh_query_direct(
     let tcp = TcpStream::connect(addr)
         .await
         .map_err(|e| anyhow::anyhow!("DoH TCP connect to {addr} failed: {e}"))?;
+    apply_mark(&tcp)?;
 
     // 构建带 h2 ALPN 的 TLS 配置
     let mut cfg = (*tls_cfg).clone();

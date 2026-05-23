@@ -41,7 +41,7 @@ use tracing::debug;
 use crate::{
     config::outbound::ShadowsocksOutboundConfig,
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{set_tcp_opts, Outbound, OutboundStatus},
+    outbound::{apply_mark, set_tcp_opts, Outbound, OutboundStatus},
 };
 
 // ── 加密方法 ──────────────────────────────────────────────────────────────────
@@ -790,6 +790,7 @@ impl Outbound for ShadowsocksOutbound {
             "0.0.0.0:0"
         };
         let udp = UdpSocket::bind(local_bind).await?;
+        apply_mark(&udp)?;
         udp.connect(server_addr).await?;
 
         // 构建并发送加密 UDP 包：[salt][enc(addr+payload)+tag]

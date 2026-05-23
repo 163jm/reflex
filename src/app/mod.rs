@@ -18,6 +18,7 @@ use crate::{
     inbound::{
         dns::DnsInbound, mixed::MixedInbound, tun::TunInbound, InboundTcpStream, InboundUdpPacket,
     },
+    outbound::set_global_routing_mark,
     router::Router,
 };
 
@@ -76,6 +77,9 @@ impl App {
             };
 
         // ── 1. 路由器（先建，因为 DNS resolver 需要共享规则集）────────────────
+        // 初始化全局 SO_MARK（必须在任何出站 socket 创建前设置）
+        set_global_routing_mark(config.global.routing_mark);
+
         let router = Arc::new(Router::from_config(
             &config.route,
             cache_reader.as_ref().map(|r| r.as_ref()),
@@ -334,13 +338,14 @@ impl App {
 
         // ── 7. TCP Dispatcher ────────────────────────────────────────────────
         {
-            let dispatcher = Dispatcher::new(
+            let dispatcher = Dispatcher::with_ipv6(
                 router.clone(),
                 outbound_mgr.clone(),
                 dns_tx.clone(),
                 dns_resolver.clone(),
                 stats.clone(),
                 conn_tracker.clone(),
+                config.global.ipv6,
             );
             tasks.spawn(async move {
                 dispatcher.run_tcp(tcp_rx).await;
@@ -350,13 +355,14 @@ impl App {
 
         // ── 8. UDP Dispatcher ────────────────────────────────────────────────
         {
-            let dispatcher = Dispatcher::new(
+            let dispatcher = Dispatcher::with_ipv6(
                 router.clone(),
                 outbound_mgr.clone(),
                 dns_tx.clone(),
                 dns_resolver.clone(),
                 stats.clone(),
                 conn_tracker.clone(),
+                config.global.ipv6,
             );
             tasks.spawn(async move {
                 dispatcher.run_udp(udp_rx).await;

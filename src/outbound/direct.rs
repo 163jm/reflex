@@ -20,7 +20,7 @@ use crate::{
     config::outbound::{BlockOutboundConfig, DirectOutboundConfig},
     dns::DnsResolver,
     inbound::{InboundTcpStream, InboundUdpPacket},
-    outbound::{relay, resolve_target_with_dns, set_tcp_opts, Outbound, OutboundStatus},
+    outbound::{apply_mark, relay, resolve_target_with_dns, set_tcp_opts, Outbound, OutboundStatus},
 };
 
 // ── Direct ────────────────────────────────────────────────────────────────────
@@ -87,6 +87,7 @@ impl DirectOutbound {
         } else {
             tokio::net::UdpSocket::bind("0.0.0.0:0").await?
         };
+        apply_mark(&sock)?;
         Ok(sock)
     }
 }

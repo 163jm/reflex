@@ -21,7 +21,7 @@ use tracing::{debug, warn};
 use crate::{
     config::outbound::{SocksOutboundConfig, SocksVersion},
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{relay, resolve_target, set_tcp_opts, Outbound, OutboundStatus},
+    outbound::{apply_mark, relay, resolve_target, set_tcp_opts, Outbound, OutboundStatus},
 };
 
 // ── SOCKS 常量 ────────────────────────────────────────────────────────────────
@@ -344,6 +344,7 @@ impl SocksOutbound {
             "0.0.0.0:0"
         };
         let udp = tokio::net::UdpSocket::bind(local_bind).await?;
+        apply_mark(&udp)?;
         udp.send_to(&dgram, relay_addr).await?;
 
         let mut buf = vec![0u8; 65535];
