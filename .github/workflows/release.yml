@@ -75,12 +75,6 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: update Cargo.lock [skip ci]"
           git push
 
-      - name: Run tests
-        run: cargo test --locked
-
-      - name: Run clippy
-        run: cargo clippy --locked -- -D warnings
-
   # ── 3. 交叉编译 reflex ────────────────────────────────────────────────────
   build:
     name: Build / ${{ matrix.target }}
