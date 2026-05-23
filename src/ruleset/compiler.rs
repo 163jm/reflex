@@ -477,25 +477,74 @@ struct SingBoxEnvelope {
 /// sing-box 单条规则（字段之间为 OR）。
 ///
 /// sub_rules 用 `Vec<Value>` 延迟解析，避免一次性展开整棵嵌套树。
+///
+/// meta-rules-dat 中部分文件将字段写成裸字符串而非数组，例如：
+///   `"domain_suffix": "zotero.org"` 而不是 `"domain_suffix": ["zotero.org"]`
+/// `string_or_vec` 同时兼容两种写法。
 #[derive(Debug, Deserialize, Default)]
 struct SingBoxRule {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_vec")]
     domain: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_vec")]
     domain_suffix: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_vec")]
     domain_keyword: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_vec")]
     domain_regex: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_vec")]
     ip_cidr: Vec<String>,
     #[serde(default)]
     port: Vec<u16>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_vec")]
     port_range: Vec<String>,
     /// logical_and / logical_or 嵌套子规则，逐条按需反序列化
     #[serde(rename = "rules", default)]
     sub_rules: Vec<serde_json::Value>,
+}
+
+/// 兼容 sing-box JSON 里字段值为裸字符串或字符串数组两种写法：
+///   `"domain_suffix": "example.com"`        → vec!["example.com"]
+///   `"domain_suffix": ["a.com", "b.com"]`   → vec!["a.com", "b.com"]
+fn string_or_vec<'de, D>(de: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{SeqAccess, Visitor};
+    use std::fmt;
+
+    struct StringOrVec;
+
+    impl<'de> Visitor<'de> for StringOrVec {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a string or array of strings")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<Self::Value, E> {
+            Ok(vec![v.to_owned()])
+        }
+
+        fn visit_string<E: serde::de::Error>(
+            self,
+            v: String,
+        ) -> std::result::Result<Self::Value, E> {
+            Ok(vec![v])
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> std::result::Result<Self::Value, A::Error> {
+            let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+            while let Some(s) = seq.next_element::<String>()? {
+                out.push(s);
+            }
+            Ok(out)
+        }
+    }
+
+    de.deserialize_any(StringOrVec)
 }
 
 /// 解析 sing-box 端口范围字符串，格式为 "start:end"（冒号分隔）
@@ -702,6 +751,27 @@ port:           8000-9000
     #[test]
     fn singbox_json_invalid() {
         assert!(CompiledRuleSet::from_singbox_json("not json").is_err());
+    }
+
+    #[test]
+    fn singbox_json_bare_string_fields() {
+        // meta-rules-dat 中部分文件用裸字符串而非数组，两种写法都要能解析
+        let json = r#"{
+            "version": 2,
+            "rules": [
+                {
+                    "domain_suffix": "zotero.org",
+                    "domain": "example.com",
+                    "domain_keyword": "ads",
+                    "domain_regex": "^tracker\\d+\\."
+                }
+            ]
+        }"#;
+        let rs = CompiledRuleSet::from_singbox_json(json).unwrap();
+        assert_eq!(rs.domain_suffixes, vec!["zotero.org"]);
+        assert_eq!(rs.domains, vec!["example.com"]);
+        assert_eq!(rs.domain_keywords, vec!["ads"]);
+        assert_eq!(rs.domain_regexes, vec!["^tracker\\d+\\."]);
     }
 
     #[test]
