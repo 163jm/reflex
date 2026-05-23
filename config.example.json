@@ -222,6 +222,16 @@
         "alpn": ["h2", "http/1.1"]
       }
     },
+    //socks
+    {
+      "type": "socks",
+      "tag": "socks-proxy",
+      "server": "127.0.0.1",
+      "server_port": 1080,
+      "version": "5",
+      "username": "user",
+      "password": "pass"
+    },
     // VLESS over TCP + REALITY（与 sing-box 配置格式一致）
     {
       "type": "vless",
