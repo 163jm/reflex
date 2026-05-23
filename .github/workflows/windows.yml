@@ -37,6 +37,7 @@ jobs:
             --locked \
             --target x86_64-pc-windows-msvc \
             --bin reflex \
+            --no-default-features \
             --features outbound-net
 
       - name: Collect binary
@@ -58,5 +59,4 @@ jobs:
           name: reflex-windows-x86_64
           path: |
             reflex-windows-x86_64.zip
-            reflex-windows-x86_64.zip.sha256
           retention-days: 7
