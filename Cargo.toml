@@ -1,0 +1,94 @@
+[package]
+name = "reflex"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "reflex"
+path = "src/main.rs"
+
+[features]
+default = ["jemalloc"]
+jemalloc = ["dep:tikv-jemallocator"]
+outbound-net = [
+    "dep:tokio-rustls", "dep:rustls", "dep:rustls-native-certs",
+    "dep:rustls-pemfile", "dep:tokio-tungstenite", "dep:quinn",
+    # VMess: AES-128-GCM / ChaCha20-Poly1305 分帧加密 + KDF
+    "dep:aes", "dep:aes-gcm", "dep:chacha20poly1305",
+    "dep:hmac", "dep:sha2", "dep:sha3", "dep:md-5",
+    "dep:crc32fast", "dep:fnv",
+    # REALITY
+    "dep:x25519-dalek", "dep:hkdf", "dep:hex", "dep:rand",
+    # Shadowsocks
+    "dep:sha1", "dep:blake3",
+]
+
+[dependencies]
+tikv-jemallocator = { version = "0.6", optional = true }
+serde            = { version = "1", features = ["derive"] }
+serde_json       = "1"
+serde_yaml       = "0.9"
+thiserror        = "1"
+anyhow           = "1"
+tokio            = { version = "1", features = ["full"] }
+bytes            = "1"
+socket2          = { version = "0.5", features = ["all"] }
+libc             = "0.2"
+dashmap          = "5"
+lru              = "0.12"
+tracing          = "0.1"
+async-trait      = "0.1"
+futures-util     = "0.3"
+tokio-stream     = "0.1"
+uuid             = { version = "1", features = ["v4"] }
+pin-project-lite = "0.2"
+redb             = "2"
+ureq             = "2"
+reqwest          = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream", "http2"] }
+base64           = "0.22"
+h2               = "0.4"
+http             = "1"
+regex            = "1"
+ahash            = "0.8"
+fst              = "0.4"
+tun              = { version = "0.6", features = ["async"] }
+# outbound-net optional deps
+tokio-rustls        = { version = "0.26", optional = true }
+rustls              = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
+rustls-pemfile      = { version = "2", optional = true }
+tokio-tungstenite   = { version = "0.24", features = ["rustls-tls-native-roots"], optional = true }
+quinn               = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
+# VMess 加密（AES-GCM 握手 + ChaCha20-Poly1305 数据层）
+aes              = { version = "0.8",  optional = true }
+aes-gcm          = { version = "0.10", optional = true }
+chacha20poly1305 = { version = "0.10", optional = true }
+hmac             = { version = "0.12", optional = true }
+sha2             = { version = "0.10", optional = true }
+sha3             = { version = "0.10", optional = true }
+md-5             = { version = "0.10", optional = true }
+sha1             = { version = "0.10", optional = true }
+blake3           = { version = "1",    optional = true }
+# VMess AuthID CRC32 + FNV header checksum
+crc32fast        = { version = "1", optional = true }
+fnv              = { version = "1", optional = true }
+# REALITY 依赖
+x25519-dalek     = { version = "2", features = ["static_secrets"], optional = true }
+hkdf             = { version = "0.12", optional = true }
+hex              = { version = "0.4", optional = true }
+rand             = { version = "0.8", optional = true }
+
+[lib]
+name = "reflex"
+path = "src/lib.rs"
+
+[dev-dependencies]
+tempfile = "=3.13.0"
+tokio    = { version = "1", features = ["full"] }
+
+[profile.release]
+strip         = "symbols"  # 剥离调试符号表，不影响运行
+debug         = false      # 不内嵌调试信息
+lto           = "thin"     # 跨 crate 裁掉未调用的代码，thin 构建速度可接受
+codegen-units = 1          # 单编译单元，允许更完整的内联分析
+panic         = "abort"    # panic 直接退出，去掉 unwind 运行时；proxy 场景无影响

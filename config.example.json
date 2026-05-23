@@ -1,0 +1,475 @@
+{
+  // 全局配置
+  "global": {
+    "routing_mark": 1789,
+    "ipv6": true
+  },
+  // DNS 配置
+  "dns": {
+    "servers": [
+      // ── UDP DNS（最基础，默认端口 53）────────────────────────────────────
+      // 裸 IP 或 IP:port，无协议前缀即为 UDP。
+      // 国内 DNS 建议直连（detour: "direct"），延迟低、无需加密。
+      {
+        "tag": "local",
+        "address": "223.5.5.5",       // 阿里 DNS；也可用 "119.29.29.29"（腾讯）
+        "detour": "direct",
+        "timeout": 5
+      },
+
+      // ── TCP DNS ──────────────────────────────────────────────────────────
+      // 前缀 tcp://，默认端口 53。
+      // 适合：明文但需要 TCP 可靠传输的场景（如响应超过 512 字节）。
+      // 注意：经 detour 时走隧道 TCP，直连时每次查询新建连接。
+      {
+        "tag": "local-tcp",
+        "address": "tcp://223.5.5.5",
+        "detour": "direct",
+        "timeout": 5
+      },
+
+      // ── DNS-over-HTTPS（DoH）────────────────────────────────────────────
+      // 前缀 https://，默认端口 443。
+      // 优先协商 HTTP/2，不支持时回退 HTTP/1.1，均走 TLS。
+      // 建议：address 用 IP 形式，避免 bootstrap 循环；若用域名须配 domain_resolver。
+      {
+        "tag": "remote",
+        "address": "https://1.1.1.1/dns-query",
+        // DoH 查询走代理，防止 DNS 污染
+        "detour": "🚀 节点选择",
+        "timeout": 5
+      },
+      // DoH 域名形式示例：需要 domain_resolver 先解析 DoH 服务器本身的 IP
+      {
+        "tag": "remote-doh-domain",
+        "address": "https://dns.google/dns-query",
+        // 用纯 IP 的 local 来解析 dns.google，避免循环
+        "domain_resolver": "local",
+        "detour": "🚀 节点选择",
+        "timeout": 5
+      },
+
+      // ── DNS-over-TLS（DoT）──────────────────────────────────────────────
+      // 前缀 tls://，默认端口 853。
+      // TCP + TLS 握手，DNS wire-format（2 字节长度前缀帧）。
+      // sni：TLS 握手时发送的 ServerName，address 为 IP 时必须显式填写。
+      // insecure：跳过证书验证，仅调试使用。
+      {
+        "tag": "remote-dot",
+        "address": "tls://1.1.1.1:853",
+        "sni": "cloudflare-dns.com",   // address 为 IP 时需显式指定 SNI
+        "detour": "🚀 节点选择",
+        "timeout": 5
+      },
+
+      // ── DNS-over-QUIC（DoQ）─────────────────────────────────────────────
+      // 前缀 quic://，默认端口 853，ALPN 固定为 "doq"（RFC 9250）。
+      // 基于 QUIC 流，每次查询独立双向流，低延迟、抗丢包。
+      // 注意：DoQ 不支持经 TCP detour（QUIC 依赖 UDP），detour 配置会被忽略并直连。
+      {
+        "tag": "remote-doq",
+        "address": "quic://dns.adguard.com",
+        "sni": "dns.adguard.com",
+        "timeout": 5
+      },
+
+      // ── 内置响应码（拦截用）─────────────────────────────────────────────
+      // rcode://refused   → 返回 REFUSED（明确拒绝，客户端知道被拦截）
+      // rcode://nxdomain  → 返回 NXDOMAIN（假装域名不存在）
+      // rcode://success   → 返回空 NOERROR（静默丢弃，不报错）
+      {
+        "tag": "block-dns",
+        "address": "rcode://refused"
+      },
+
+      // ── FakeIP ───────────────────────────────────────────────────────────
+      // 搭配透明代理（tproxy/tun）使用，让流量携带域名信息抵达路由层。
+      // A/AAAA 查询返回假 IP（TTL=1），路由层用假 IP 反查真实域名后再代理。
+      // exclude_domain_suffix：这些域名直接返回 NXDOMAIN，降级到真实上游解析。
+      {
+        "tag": "fakeip",
+        "address": "fakeip://",
+        "fakeip": {
+          "inet4_range": "198.18.0.0/15",
+          "inet6_range": "fc00::/18",
+          "exclude_domain_suffix": ["lan", "local", "internal", "corp"]
+        }
+      }
+    ],
+    "rules": [
+      // 广告域名 → 拒绝解析
+      {
+        "ruleset": ["geosite-ads"],
+        "server": "block-dns"
+      },
+      // 国内域名 → 国内 DNS
+      {
+        "ruleset": ["geosite-cn"],
+        "server": "local"
+      },
+      {
+        "query_type": [
+          "A",
+          "AAAA"
+        ],
+        "server": "fakeip"
+      }
+    ],
+    "final": "remote",
+    "strategy": "ipv4_only",
+    "disable_cache": false,
+    "cache_capacity": 4096,     // ← 明确设置缓存容量
+    "cache_ttl_max": 3600,
+    "optimistic_timeout": 180   // ← 
+  },
+
+  // 入站配置
+  "inbounds": [
+    // TProxy 透明代理（需要 iptables/nftables 配合）
+    {
+      "type": "tproxy",
+      "tag": "tproxy-in",
+      "listen": "0.0.0.0",
+      "listen_port": 7893,
+      "mark": 1
+    },
+    // SOCKS5 + HTTP CONNECT 混合入站
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 7890
+    },
+    // DNS 入站（接管本机 DNS 查询）
+    {
+      "type": "dns",
+      "tag": "dns-in",
+      "listen": "127.0.0.1",
+      "listen_port": 5353
+    },
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "interface_name": "tun0",
+      "mtu": 9000,
+      "address": ["198.18.0.1/16", "fd00::1/126"],
+      "auto_route": true,
+      "iproute2_table_index": 2022,
+      "iproute2_rule_index": 9000,
+      "strict_route": true,
+      "stack": "system",
+      "exclude_interface": ["eth0"],
+      "exclude_uid": [0],
+      "udp_timeout": 300
+    }
+  ],
+
+  // 出站配置
+  "outbounds": [
+    // ── 节点组：手动选择（selector）──────────────────────────────────────
+    // 路由规则可以直接把流量发往该 tag，再由 Clash API / 面板切换实际节点。
+    {
+      "type": "selector",
+      "tag": "🚀 节点选择",
+      "outbounds": [
+        "自动选择",
+        "proxy",
+        "vmess-ws-tls",
+        "vmess-tcp",
+        "tuic-proxy",
+        "hy2-proxy",
+        "direct"
+      ],
+      "default": "自动选择"
+    },
+
+    // ── 节点组：自动测速（url-test）──────────────────────────────────────
+    // 按 interval 惰性测速，选择延迟最低节点；tolerance 毫秒内不频繁切换。
+    {
+      "type": "url-test",
+      "tag": "自动选择",
+      "outbounds": [
+        "proxy",
+        "vmess-ws-tls",
+        "vmess-tcp",
+        "tuic-proxy",
+        "hy2-proxy"
+      ],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "3m",
+      "idle_timeout": "30m",
+      "tolerance": 50
+    },
+
+    // VLESS over WebSocket + TLS（与 sing-box 配置格式一致）
+    {
+      "type": "vless",
+      "tag": "proxy-ws-tls",
+      "server": "your.domain.com",
+      "server_port": 443,
+      "uuid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "transport": {
+        "type": "ws",
+        "path": "/your-path",
+        "headers": {
+          "Host": "your.domain.com"
+        }
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "your.domain.com",
+        "insecure": false,
+        "alpn": ["h2", "http/1.1"]
+      }
+    },
+    // VLESS over TCP + REALITY（与 sing-box 配置格式一致）
+    {
+      "type": "vless",
+      "tag": "proxy-reality",
+      "server": "your.server.ip",
+      "server_port": 443,
+      "uuid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      // transport 缺省即为裸 TCP，无需显式写出
+      "tls": {
+        "enabled": true,
+        "server_name": "www.apple.com",
+        "reality": {
+          "enabled": true,
+          "public_key": "服务端x25519公钥(base64url)",
+          "short_id": "abcdef01"
+        }
+      }
+    }
+    // VMess over WebSocket + TLS
+    {
+      "type": "vmess",
+      "tag": "vmess-ws-tls",
+      "server": "your-vmess-server.example.com",
+      "server_port": 443,
+      "uuid": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+      "security": "auto",
+      "transport": {
+        "type": "ws",
+        "path": "/vmess",
+        "headers": {
+          "Host": "your-vmess-server.example.com"
+        }
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "your-vmess-server.example.com",
+        "insecure": false
+      }
+    },
+    // VMess over TCP（无 TLS）
+    {
+      "type": "vmess",
+      "tag": "vmess-tcp",
+      "server": "your-vmess-tcp-server.example.com",
+      "server_port": 80,
+      "uuid": "cccccccc-dddd-eeee-ffff-000000000000",
+      "security": "auto",
+      "transport": {
+        "type": "tcp"
+      },
+      "tls": {
+        "enabled": false
+      }
+    },
+    // shadowsocks
+    {
+      "type": "shadowsocks",
+      "tag": "ss-proxy",
+      "server": "example.com",
+      "server_port": 8388,
+      "method": "aes-256-gcm",
+      "password": "your-password"
+    },
+    // TUIC
+    {
+      "type": "tuic",
+      "tag": "proxy-tuic",
+      "server": "your.domain.com",
+      "server_port": 443,
+      "uuid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "password": "your-password",
+      "congestion_control": "bbr",
+      "udp_relay_mode": "native",
+      "zero_rtt_handshake": false,
+      "heartbeat": "10s",
+      "tls": {
+        "server_name": "your.domain.com",
+        "alpn": ["h3"],
+        "insecure": false
+      }
+    }
+    // Hysteria2（备用出站）
+    {
+      "type": "hysteria2",
+      "tag": "hy2-proxy",
+      "server": "your-hy2-server.example.com",
+      "server_port": 443,
+      "password": "your-password",
+      "tls": {
+        "enabled": true,
+        "server_name": "your-hy2-server.example.com",
+        "insecure": false
+      },
+      "up_mbps": 50,
+      "down_mbps": 200
+    },
+    // Trojan over TCP + TLS（与 sing-box 配置格式一致）
+    {
+      "type": "trojan",
+      "tag": "trojan-proxy",
+      "server": "your.domain.com",
+      "server_port": 443,
+      "password": "your-password",
+      // transport 缺省即为裸 TCP；WS 示例见下
+      "tls": {
+        "enabled": true,
+        "server_name": "your.domain.com",
+        "insecure": false
+      }
+    },
+    // Trojan over WebSocket + TLS（与 sing-box 配置格式一致）
+    {
+      "type": "trojan",
+      "tag": "trojan-ws",
+      "server": "your.domain.com",
+      "server_port": 443,
+      "password": "your-password",
+      "transport": {
+        "type": "ws",
+        "path": "/trojan",
+        "headers": { "Host": "your.domain.com" }
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "your.domain.com",
+        "insecure": false
+      }
+    },
+    // 直连
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    // 丢弃
+    {
+      "type": "block",
+      "tag": "block"
+    }
+  ],
+
+  // 路由配置
+  "route": {
+    "rules": [
+      // ── 协议嗅探 ────────────────────────────────────────────────────────
+      // 对所有流量先做嗅探（TLS SNI / HTTP Host / HTTP2 ALPN），用嗅探结果更新目标域名后重新路由。
+      // sniff_override_destination（默认 false）：true 时用嗅探结果覆盖目标地址（FakeIP 模式推荐）；
+      // false 时只用嗅探结果匹配规则，不修改目标地址。
+      // sniff_type 可选，省略时默认启用全部（tls/http/quic/ssh/bittorrent）。
+      // 必须放在规则链最前面。
+      {
+        "sniff": true,
+        "sniff_type": ["tls", "http", "quic", "ssh", "bittorrent"],
+        "sniff_timeout_ms": 300,
+        "sniff_override_destination": false
+      },
+
+      // ── DNS 劫持 ─────────────────────────────────────────────────────────
+      //
+      // 写法一：匹配嗅探出的 DNS 协议——适用于 tproxy/tun 透明截获的 DNS 流量
+      {
+        "hijack_dns": true,
+        "protocol": ["dns"]
+      },
+      //
+      // 写法二：匹配来自 dns-in 入站的流量——适用于显式发往 dns inbound 的查询
+      {
+        "hijack_dns": true,
+        "inbound": ["dns-in"]
+      },
+      //
+      // ✗ 错误用法（加载时报错）：裸 hijack_dns 没有任何匹配条件
+      // { "hijack_dns": true }
+
+      // ── 广告拦截 ─────────────────────────────────────────────────────────
+      {
+        "ruleset": ["geosite-ads"],
+        "outbound": "block"
+      },
+
+      // ── 私有地址 → 直连 ──────────────────────────────────────────────────
+      {
+        "ip_cidr": [
+          "127.0.0.0/8",
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "192.168.0.0/16",
+          "::1/128",
+          "fc00::/7"
+        ],
+        "outbound": "direct"
+      },
+
+      // ── 国内 IP 和域名 → 直连 ────────────────────────────────────────────
+      {
+        "ruleset": "geosite-cn",
+        "outbound": "direct"
+      },
+      {
+        "sniff": true,
+        "server": "remote"
+      },
+      {
+        "ruleset": "geoip-cn",
+        "outbound": "direct"
+      }
+    ],
+
+    // 默认出站：未命中规则的流量进入 selector 节点组
+    "final": "🚀 节点选择",
+
+    // 规则集文件声明
+    "rule_set": [
+      {
+        "tag": "geosite-cn",
+        "type": "local", "path": "/etc/rs-proxy/rules/geosite-cn.bin"
+      },
+      {
+        "tag": "geosite-ads",
+        "type": "local", "path": "/etc/rs-proxy/rules/geosite-ads.bin"
+      },
+      {
+        "tag": "geoip-cn",
+        "type": "local", "path": "/etc/rs-proxy/rules/geoip-cn.bin"
+      }
+    ]
+  },
+
+  // 实验性功能
+  "experimental": {
+    // SQLite 缓存文件：可持久化 fake-ip 映射
+    "cache_file": {
+      "enabled": true,
+      "path": "cache.db",
+      "store_fakeip": true
+    },
+
+    // Clash API / 外部控制器：可配合 Clash Dashboard / Yacd / MetaCubeX UI 使用
+    "clash_api": {
+      "enabled": true,
+      "default_mode": "rule",
+      "external_controller": "0.0.0.0:9090",
+      "external_ui": "ui"
+    }
+  },
+  // 日志配置
+  "log": {
+    "level": "info",
+    "output": "stderr",
+    "timestamp": true
+  }
+}
