@@ -14,6 +14,7 @@ pub enum OutboundConfig {
     Trojan(TrojanOutboundConfig),
     Direct(DirectOutboundConfig),
     Block(BlockOutboundConfig),
+    Socks(SocksOutboundConfig),
     Selector(SelectorOutboundConfig),
     UrlTest(UrlTestOutboundConfig),
 }
@@ -29,6 +30,7 @@ impl OutboundConfig {
             Self::Trojan(c) => &c.tag,
             Self::Direct(c) => &c.tag,
             Self::Block(c) => &c.tag,
+            Self::Socks(c) => &c.tag,
             Self::Selector(c) => &c.tag,
             Self::UrlTest(c) => &c.tag,
         }
@@ -514,6 +516,7 @@ pub struct TuicOutboundConfig {
     pub detour: Option<String>,
 }
 
+
 // ── Trojan ────────────────────────────────────────────────────────────────────
 
 /// Trojan 出站配置。
@@ -589,6 +592,77 @@ pub struct DirectOutboundConfig {
 #[serde(deny_unknown_fields)]
 pub struct BlockOutboundConfig {
     pub tag: String,
+}
+
+// ── SOCKS ─────────────────────────────────────────────────────────────────────
+
+/// SOCKS5/SOCKS4/SOCKS4a 出站配置（与 sing-box SOCKSOutboundOptions 对齐）。
+///
+/// 配置示例（SOCKS5 带认证）：
+/// ```json
+/// {
+///   "type": "socks",
+///   "tag": "socks-out",
+///   "server": "127.0.0.1",
+///   "server_port": 1080,
+///   "version": "5",
+///   "username": "user",
+///   "password": "pass"
+/// }
+/// ```
+///
+/// SOCKS4 示例（不支持域名，客户端需预先解析）：
+/// ```json
+/// {
+///   "type": "socks",
+///   "tag": "socks4-out",
+///   "server": "127.0.0.1",
+///   "server_port": 1080,
+///   "version": "4"
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SocksOutboundConfig {
+    pub tag: String,
+
+    /// 代理服务器地址（域名或 IP）
+    pub server: String,
+
+    /// 代理服务器端口
+    pub server_port: u16,
+
+    /// 协议版本："5"（默认）、"4a"、"4"
+    /// 与 sing-box `version` 字段对齐；缺省为 SOCKS5
+    #[serde(default)]
+    pub version: Option<String>,
+
+    /// 用户名（SOCKS5 USER/PASS 认证，可选）
+    #[serde(default)]
+    pub username: Option<String>,
+
+    /// 密码（SOCKS5 USER/PASS 认证，可选）
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+impl SocksOutboundConfig {
+    /// 解析 version 字符串，返回规范化值。
+    /// 合法值："5" | "4a" | "4"，其余视为错误。
+    pub fn parsed_version(&self) -> anyhow::Result<SocksVersion> {
+        match self.version.as_deref().unwrap_or("5") {
+            "5" | "" => Ok(SocksVersion::V5),
+            "4a" => Ok(SocksVersion::V4a),
+            "4" => Ok(SocksVersion::V4),
+            other => anyhow::bail!("unsupported socks version: '{other}', expected 5 / 4a / 4"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocksVersion {
+    V5,
+    V4a,
+    V4,
 }
 
 // ── Selector / URL-Test ──────────────────────────────────────────────────────
@@ -752,6 +826,7 @@ pub struct RealityDialConfig {
     pub alpn: Vec<String>,
     pub fingerprint: String,
 }
+
 
 pub fn parse_duration(s: &str) -> anyhow::Result<std::time::Duration> {
     let s = s.trim();
@@ -929,6 +1004,67 @@ mod tests {
             serde_json::from_value(json!({ "type": "block", "tag": "block" })).unwrap();
         assert_eq!(direct.tag(), "direct");
         assert_eq!(block.tag(), "block");
+    }
+
+    #[test]
+    fn parse_socks_defaults() {
+        // 最简配置：仅必填字段，version 缺省 → SOCKS5，无认证
+        let ob: OutboundConfig = serde_json::from_value(json!({
+            "type": "socks",
+            "tag": "socks-out",
+            "server": "127.0.0.1",
+            "server_port": 1080
+        }))
+        .unwrap();
+        assert_eq!(ob.tag(), "socks-out");
+        if let OutboundConfig::Socks(c) = ob {
+            assert_eq!(c.server, "127.0.0.1");
+            assert_eq!(c.server_port, 1080);
+            assert!(c.version.is_none());
+            assert!(c.username.is_none());
+            assert!(c.password.is_none());
+            assert_eq!(c.parsed_version().unwrap(), SocksVersion::V5);
+        } else {
+            panic!("expected socks config");
+        }
+    }
+
+    #[test]
+    fn parse_socks5_with_auth() {
+        let ob: OutboundConfig = serde_json::from_value(json!({
+            "type": "socks",
+            "tag": "socks5-auth",
+            "server": "proxy.example.com",
+            "server_port": 1080,
+            "version": "5",
+            "username": "alice",
+            "password": "s3cr3t"
+        }))
+        .unwrap();
+        if let OutboundConfig::Socks(c) = ob {
+            assert_eq!(c.parsed_version().unwrap(), SocksVersion::V5);
+            assert_eq!(c.username.as_deref(), Some("alice"));
+            assert_eq!(c.password.as_deref(), Some("s3cr3t"));
+        } else {
+            panic!("expected socks config");
+        }
+    }
+
+    #[test]
+    fn parse_socks4a() {
+        let ob: OutboundConfig = serde_json::from_value(json!({
+            "type": "socks",
+            "tag": "socks4a-out",
+            "server": "127.0.0.1",
+            "server_port": 1080,
+            "version": "4a"
+        }))
+        .unwrap();
+        if let OutboundConfig::Socks(c) = ob {
+            assert_eq!(c.parsed_version().unwrap(), SocksVersion::V4a);
+        } else {
+            panic!("expected socks config");
+        }
     }
 
     #[test]

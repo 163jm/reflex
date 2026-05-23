@@ -1,6 +1,7 @@
 pub mod direct;
 pub mod group;
 pub mod proto;
+pub mod socks;
 
 #[cfg(feature = "outbound-net")]
 pub mod hy2;

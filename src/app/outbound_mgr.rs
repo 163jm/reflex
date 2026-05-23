@@ -55,6 +55,9 @@ impl OutboundManager {
                     }
                 }
                 OutboundConfig::Block(c) => Arc::new(BlockOutbound::new(c.clone())),
+                OutboundConfig::Socks(c) => {
+                    Arc::new(crate::outbound::socks::SocksOutbound::new(c.clone())?)
+                }
                 OutboundConfig::Selector(c) => Arc::new(SelectorOutbound::new(
                     c.clone(),
                     registry.clone(),
