@@ -99,37 +99,35 @@ jobs:
           ls -lh "$GEOIP_OUT" | tail -5
 
       # ── 5. 检出本仓库的 ruleset 分支（不存在则自动建立孤立分支）──────────
-      - name: Checkout ruleset branch
-        uses: actions/checkout@v4
-        with:
-          ref: ruleset
-          path: ruleset-branch
-          # 分支不存在时不报错，后续步骤自行处理
-          fetch-depth: 0
-        continue-on-error: true   # 分支不存在时允许失败
-
-      - name: Ensure ruleset branch exists
+      - name: Checkout or create ruleset branch
         run: |
-          if [ ! -d "ruleset-branch/.git" ]; then
-            echo "ruleset branch does not exist, creating orphan branch..."
-            mkdir -p ruleset-branch
-            cd ruleset-branch
-            git init
-            git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          # 手动 clone 仓库，避免 actions/checkout 在分支不存在时报错退出
+          git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git ruleset-branch
+          cd ruleset-branch
+          
+          # 配置 Bot 的 Git 信息
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 检查远程仓库是否存在 ruleset 分支
+          if git ls-remote --heads origin ruleset | grep -q ruleset; then
+            echo "Branch 'ruleset' exists, checking out..."
+            git checkout ruleset
+          else
+            echo "Branch 'ruleset' does not exist, creating orphan branch..."
+            # 创建没有任何历史记录的孤立分支
             git checkout --orphan ruleset
-            # 创建初始提交，让分支存在
+            # 清理掉 clone 下来的默认分支文件
+            git rm -rf .
+            
+            # 创建初始提交，让分支实体化
             echo "# Reflex Ruleset" > README.md
             echo "" >> README.md
             echo "Auto-synced from [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat) (sing branch)." >> README.md
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
+            
             git add README.md
             git commit -m "chore: initialize ruleset branch"
-            git push origin ruleset
-          else
-            cd ruleset-branch
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git push -u origin ruleset
           fi
 
       # ── 6. 将编译产物同步到 ruleset 分支 ──────────────────────────────────
