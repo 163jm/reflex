@@ -1,0 +1,265 @@
+name: Build reflex / mipsle-softfloat
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: mipsel-unknown-linux-musl
+  ARTIFACT: reflex-linux-mipsle-softfloat
+  TOOLCHAIN_NAME: mipsel-unknown-linux-muslsf
+  TOOLCHAIN_PREFIX: mipsel-linux-muslsf
+
+jobs:
+  build:
+    name: Build reflex / mipsle softfloat
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly + rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-mipsle-softfloat-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mipsle-softfloat-cargo-
+
+      - name: Install mipsel-linux-muslsf toolchain
+        run: |
+          RELEASE_URL="https://github.com/cross-tools/musl-cross/releases/latest/download/${TOOLCHAIN_NAME}.tar.xz"
+          curl -fsSL "$RELEASE_URL" -o toolchain.tar.xz
+          tar -xJf toolchain.tar.xz -C /opt
+
+          TOOLCHAIN_BIN=$(find /opt -type f -name "*mipsel*-gcc" 2>/dev/null \
+            | grep -v '\-gcc-[0-9]' | head -1 | xargs -r dirname)
+          [ -z "$TOOLCHAIN_BIN" ] && \
+            TOOLCHAIN_BIN=$(find /opt -type f -name "*-gcc" 2>/dev/null | head -1 | xargs -r dirname)
+          [ -z "$TOOLCHAIN_BIN" ] && { find /opt -maxdepth 5 | sort; exit 1; }
+
+          ACTUAL_GCC=$(find "$TOOLCHAIN_BIN" -maxdepth 1 -type f -name "*-gcc" | head -1 | xargs basename)
+          ACTUAL_PREFIX="${ACTUAL_GCC%-gcc}"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+          echo "TOOLCHAIN_PREFIX=$ACTUAL_PREFIX" >> "$GITHUB_ENV"
+        env:
+          TOOLCHAIN_NAME: ${{ env.TOOLCHAIN_NAME }}
+
+      - name: Verify toolchain
+        run: |
+          ${TOOLCHAIN_PREFIX}-gcc --version
+          echo "Machine: $(${TOOLCHAIN_PREFIX}-gcc -dumpmachine)"
+
+      - name: Write .cargo/config.toml
+        run: |
+          mkdir -p .cargo
+          SYSROOT=$(${TOOLCHAIN_PREFIX}-gcc --print-sysroot)
+          MUSL_CRT_DIR=$(find "$SYSROOT" -name "crt1.o" 2>/dev/null | head -1 | xargs -r dirname)
+          [ -z "$MUSL_CRT_DIR" ] && \
+            MUSL_CRT_DIR=$(find /opt -name "crt1.o" 2>/dev/null | head -1 | xargs -r dirname)
+          [ -z "$MUSL_CRT_DIR" ] && { echo "ERROR: crt1.o not found"; exit 1; }
+
+          GCC_CRT_DIR=$(${TOOLCHAIN_PREFIX}-gcc -print-libgcc-file-name | xargs dirname)
+          ls "$GCC_CRT_DIR"/crtbegin.o "$GCC_CRT_DIR"/crtend.o 2>/dev/null || \
+            GCC_CRT_DIR=$(find /opt -name "crtbegin.o" 2>/dev/null | head -1 | xargs -r dirname)
+
+          mkdir -p stub-libs
+          LIBGCC_EH=$(find /opt -name "libgcc_eh.a" 2>/dev/null | head -1)
+          if [ -n "$LIBGCC_EH" ]; then
+            cp "$LIBGCC_EH" stub-libs/libunwind.a
+          else
+            ${TOOLCHAIN_PREFIX}-ar rcs stub-libs/libunwind.a
+          fi
+          STUB_DIR="$(pwd)/stub-libs"
+          LIBGCC_A=$(${TOOLCHAIN_PREFIX}-gcc -print-libgcc-file-name)
+
+          WRAPPER_PATH=/usr/local/bin/mipsle-musl-linker
+          cat > "$WRAPPER_PATH" << WRAPPER_EOF
+          #!/bin/sh
+          args=""
+          for a in "$@"; do
+            case "$a" in
+              crt1.o|crti.o|crtn.o) args="$args \"${MUSL_CRT_DIR}/$a\"";;
+              crtbegin.o|crtend.o)  args="$args \"${GCC_CRT_DIR}/$a\"";;
+              *) args="$args \"$a\"";;
+            esac
+          done
+          eval exec ${TOOLCHAIN_PREFIX}-gcc -B"${MUSL_CRT_DIR}" -B"${GCC_CRT_DIR}" -L"${MUSL_CRT_DIR}" -L"${GCC_CRT_DIR}" -L"${STUB_DIR}" $args "${LIBGCC_A}"
+          WRAPPER_EOF
+          chmod +x "$WRAPPER_PATH"
+
+          printf '[target.%s]\nlinker = "%s"\nrustflags = [\n  "-C", "target-cpu=mips32r2",\n  "-C", "target-feature=+crt-static,+mips32r2,+dsp,-fp64",\n  "-C", "panic=abort",\n]\n' \
+            "${TARGET}" "${WRAPPER_PATH}" > .cargo/config.toml
+
+      - name: Update Cargo.lock
+        run: cargo +nightly generate-lockfile
+
+      - name: Build reflex
+        run: |
+          export CC_mipsel_unknown_linux_musl="${TOOLCHAIN_PREFIX}-gcc"
+          export AR_mipsel_unknown_linux_musl="${TOOLCHAIN_PREFIX}-ar"
+          cargo +nightly clean --target ${{ env.TARGET }} 2>/dev/null || true
+          cargo +nightly build \
+            --release \
+            -Z build-std="std,panic_abort" \
+            --target ${{ env.TARGET }} \
+            --bin reflex \
+            --features outbound-net
+
+      - name: Collect binary
+        run: |
+          mkdir -p dist
+          cp "target/${{ env.TARGET }}/release/reflex" dist/reflex
+          cd dist
+          tar -czf "../${{ env.ARTIFACT }}.tar.gz" reflex
+          cd ..
+          sha256sum "${{ env.ARTIFACT }}.tar.gz" > "${{ env.ARTIFACT }}.tar.gz.sha256"
+          ls -lh "${{ env.ARTIFACT }}.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: |
+            ${{ env.ARTIFACT }}.tar.gz
+            ${{ env.ARTIFACT }}.tar.gz.sha256
+          retention-days: 7
+
+# ── mips-unknown-linux-musl（大端） ──────────────────────────────────────────
+
+  build-mips:
+    name: Build reflex / mips-unknown-linux-musl
+    runs-on: ubuntu-latest
+
+    env:
+      TARGET: mips-unknown-linux-musl
+      ARTIFACT: reflex-linux-mips
+      TOOLCHAIN_NAME: mips-unknown-linux-muslsf
+      TOOLCHAIN_PREFIX: mips-linux-muslsf
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly + rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-mips-musl-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mips-musl-cargo-
+
+      - name: Install mips-linux-muslsf toolchain
+        run: |
+          RELEASE_URL="https://github.com/cross-tools/musl-cross/releases/latest/download/${TOOLCHAIN_NAME}.tar.xz"
+          curl -fsSL "$RELEASE_URL" -o toolchain.tar.xz
+          tar -xJf toolchain.tar.xz -C /opt
+
+          TOOLCHAIN_BIN=$(find /opt -type f -name "*mips*-gcc" 2>/dev/null \
+            | grep -v '\-gcc-[0-9]' | head -1 | xargs -r dirname)
+          [ -z "$TOOLCHAIN_BIN" ] && \
+            TOOLCHAIN_BIN=$(find /opt -type f -name "*-gcc" 2>/dev/null | head -1 | xargs -r dirname)
+          [ -z "$TOOLCHAIN_BIN" ] && { find /opt -maxdepth 5 | sort; exit 1; }
+
+          ACTUAL_GCC=$(find "$TOOLCHAIN_BIN" -maxdepth 1 -type f -name "*-gcc" | head -1 | xargs basename)
+          ACTUAL_PREFIX="${ACTUAL_GCC%-gcc}"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+          echo "TOOLCHAIN_PREFIX=$ACTUAL_PREFIX" >> "$GITHUB_ENV"
+        env:
+          TOOLCHAIN_NAME: ${{ env.TOOLCHAIN_NAME }}
+
+      - name: Write .cargo/config.toml
+        run: |
+          mkdir -p .cargo
+          SYSROOT=$(${TOOLCHAIN_PREFIX}-gcc --print-sysroot)
+          MUSL_CRT_DIR=$(find "$SYSROOT" -name "crt1.o" 2>/dev/null | head -1 | xargs -r dirname)
+          [ -z "$MUSL_CRT_DIR" ] && \
+            MUSL_CRT_DIR=$(find /opt -name "crt1.o" 2>/dev/null | head -1 | xargs -r dirname)
+          [ -z "$MUSL_CRT_DIR" ] && { echo "ERROR: crt1.o not found"; exit 1; }
+
+          GCC_CRT_DIR=$(${TOOLCHAIN_PREFIX}-gcc -print-libgcc-file-name | xargs dirname)
+          ls "$GCC_CRT_DIR"/crtbegin.o "$GCC_CRT_DIR"/crtend.o 2>/dev/null || \
+            GCC_CRT_DIR=$(find /opt -name "crtbegin.o" 2>/dev/null | head -1 | xargs -r dirname)
+
+          mkdir -p stub-libs
+          LIBGCC_EH=$(find /opt -name "libgcc_eh.a" 2>/dev/null | head -1)
+          if [ -n "$LIBGCC_EH" ]; then
+            cp "$LIBGCC_EH" stub-libs/libunwind.a
+          else
+            ${TOOLCHAIN_PREFIX}-ar rcs stub-libs/libunwind.a
+          fi
+          STUB_DIR="$(pwd)/stub-libs"
+          LIBGCC_A=$(${TOOLCHAIN_PREFIX}-gcc -print-libgcc-file-name)
+
+          WRAPPER_PATH=/usr/local/bin/mips-musl-linker
+          cat > "$WRAPPER_PATH" << WRAPPER_EOF
+          #!/bin/sh
+          args=""
+          for a in "$@"; do
+            case "$a" in
+              crt1.o|crti.o|crtn.o) args="$args \"${MUSL_CRT_DIR}/$a\"";;
+              crtbegin.o|crtend.o)  args="$args \"${GCC_CRT_DIR}/$a\"";;
+              *) args="$args \"$a\"";;
+            esac
+          done
+          eval exec ${TOOLCHAIN_PREFIX}-gcc -B"${MUSL_CRT_DIR}" -B"${GCC_CRT_DIR}" -L"${MUSL_CRT_DIR}" -L"${GCC_CRT_DIR}" -L"${STUB_DIR}" $args "${LIBGCC_A}"
+          WRAPPER_EOF
+          chmod +x "$WRAPPER_PATH"
+
+          printf '[target.%s]\nlinker = "%s"\nrustflags = [\n  "-C", "target-cpu=mips32",\n  "-C", "target-feature=+crt-static",\n  "-C", "panic=abort",\n]\n' \
+            "${TARGET}" "${WRAPPER_PATH}" > .cargo/config.toml
+
+      - name: Update Cargo.lock
+        run: cargo +nightly generate-lockfile
+
+      - name: Build reflex
+        run: |
+          export CC_mips_unknown_linux_musl="${TOOLCHAIN_PREFIX}-gcc"
+          export AR_mips_unknown_linux_musl="${TOOLCHAIN_PREFIX}-ar"
+          cargo +nightly clean --target ${{ env.TARGET }} 2>/dev/null || true
+          cargo +nightly build \
+            --release \
+            -Z build-std="std,panic_abort" \
+            --target ${{ env.TARGET }} \
+            --bin reflex \
+            --features outbound-net
+
+      - name: Verify binary
+        run: |
+          file "target/${{ env.TARGET }}/release/reflex"
+          ${TOOLCHAIN_PREFIX}-readelf -A "target/${{ env.TARGET }}/release/reflex" \
+            | grep -i "abi\|float\|endian" || true
+
+      - name: Collect binary
+        run: |
+          mkdir -p dist
+          cp "target/${{ env.TARGET }}/release/reflex" dist/reflex
+          cd dist
+          tar -czf "../${{ env.ARTIFACT }}.tar.gz" reflex
+          cd ..
+          sha256sum "${{ env.ARTIFACT }}.tar.gz" > "${{ env.ARTIFACT }}.tar.gz.sha256"
+          ls -lh "${{ env.ARTIFACT }}.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: |
+            ${{ env.ARTIFACT }}.tar.gz
+            ${{ env.ARTIFACT }}.tar.gz.sha256
+          retention-days: 7

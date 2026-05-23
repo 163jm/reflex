@@ -1,0 +1,62 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build / x86_64-pc-windows-msvc
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: windows-x86_64-pc-windows-msvc-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            windows-x86_64-pc-windows-msvc-cargo-
+
+      - name: Build reflex
+        shell: bash
+        run: |
+          cargo build \
+            --release \
+            --locked \
+            --target x86_64-pc-windows-msvc \
+            --bin reflex \
+            --features outbound-net
+
+      - name: Collect binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/x86_64-pc-windows-msvc/release/reflex.exe" "dist/reflex.exe"
+          cd dist
+          7z a "../reflex-windows-x86_64.zip" reflex.exe
+          cd ..
+          certutil -hashfile "reflex-windows-x86_64.zip" SHA256 \
+            | grep -v "hash" | grep -v "CertUtil" \
+            > "reflex-windows-x86_64.zip.sha256"
+          ls -lh reflex-windows-x86_64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reflex-windows-x86_64
+          path: |
+            reflex-windows-x86_64.zip
+            reflex-windows-x86_64.zip.sha256
+          retention-days: 7
