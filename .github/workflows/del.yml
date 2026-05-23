@@ -1,4 +1,4 @@
-name: Delete Branches Except Master
+name: Delete
 
 on:
   workflow_dispatch: # 手动触发
