@@ -629,10 +629,12 @@ async fn dot_query(
     sni: &str,
     tls_cfg: std::sync::Arc<rustls::ClientConfig>,
     msg: Bytes,
+    mark: u32,
 ) -> anyhow::Result<Bytes> {
     let tcp = TcpStream::connect(addr)
         .await
         .map_err(|e| anyhow::anyhow!("DoT TCP connect to {addr} failed: {e}"))?;
+    crate::outbound::apply_mark_to_tcp(&tcp, mark)?;
     let mut tls = crate::outbound::tls::connect_tls(tcp, sni, tls_cfg)
         .await
         .map_err(|e| anyhow::anyhow!("DoT TLS handshake with {sni} failed: {e}"))?;
@@ -732,9 +734,8 @@ async fn doq_query(
         "0.0.0.0:0"
     }
     .parse()?;
-    let mut endpoint = quinn::Endpoint::client(bind)
+    let mut endpoint = crate::outbound::new_marked_quic_endpoint(bind, mark)
         .map_err(|e| anyhow::anyhow!("DoQ endpoint bind failed: {e}"))?;
-    crate::outbound::apply_mark_to_endpoint(&endpoint, mark)?;
     endpoint.set_default_client_config((*quic_cfg).clone());
 
     let conn = endpoint

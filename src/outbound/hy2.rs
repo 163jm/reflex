@@ -51,7 +51,7 @@ use tracing::{debug, warn};
 use crate::{
     config::outbound::Hysteria2OutboundConfig,
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{apply_mark_to_endpoint, relay, Outbound},
+    outbound::{relay, Outbound},
 };
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
@@ -184,8 +184,8 @@ impl Hy2Outbound {
         }
         .parse()?;
 
-        let mut endpoint = quinn::Endpoint::client(bind)?;
-        apply_mark_to_endpoint(&endpoint, self.routing_mark)?;
+        let mut endpoint = crate::outbound::new_marked_quic_endpoint(bind, self.routing_mark)
+            .map_err(|e| anyhow::anyhow!("hy2 endpoint bind failed: {e}"))?;
         endpoint.set_default_client_config((*self.quic_config).clone());
 
         let timeout = Duration::from_secs(10); // 固定 10s，与 sing-box 默认行为一致

@@ -46,7 +46,7 @@ use tracing::{debug, warn};
 use crate::{
     config::outbound::TuicOutboundConfig,
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{apply_mark_to_endpoint, relay, AsyncReadWrite, Outbound, OutboundStatus},
+    outbound::{relay, AsyncReadWrite, Outbound, OutboundStatus},
 };
 
 // ── 协议常量 ──────────────────────────────────────────────────────────────────
@@ -149,8 +149,8 @@ impl TuicOutbound {
             "0.0.0.0:0"
         }
         .parse()?;
-        let mut endpoint = quinn::Endpoint::client(bind)?;
-        apply_mark_to_endpoint(&endpoint, self.routing_mark)?;
+        let mut endpoint = crate::outbound::new_marked_quic_endpoint(bind, self.routing_mark)
+            .map_err(|e| anyhow::anyhow!("tuic endpoint bind failed: {e}"))?;
         endpoint.set_default_client_config((*self.quic_config).clone());
 
         let conn = tokio::time::timeout(Duration::from_secs(10), endpoint.connect(addr, sni)?)
