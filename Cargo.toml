@@ -13,6 +13,7 @@ jemalloc = ["dep:tikv-jemallocator"]
 outbound-net = [
     "dep:tokio-rustls", "dep:rustls", "dep:rustls-native-certs",
     "dep:rustls-pemfile", "dep:tokio-tungstenite", "dep:quinn",
+    "dep:hyper-rustls",
     # VMess: AES-128-GCM / ChaCha20-Poly1305 分帧加密 + KDF
     "dep:aes", "dep:aes-gcm", "dep:chacha20poly1305",
     "dep:hmac", "dep:sha2", "dep:sha3", "dep:md-5",
@@ -47,6 +48,11 @@ ureq             = "2"
 reqwest          = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream", "http2"] }
 base64           = "0.22"
 h2               = "0.4"
+hyper            = { version = "1", features = ["http1", "http2", "client"] }
+hyper-util       = { version = "0.1", features = ["client", "client-legacy", "http2", "tokio"] }
+hyper-rustls     = { version = "0.27", default-features = false, features = ["http2", "ring", "rustls-native-certs"], optional = true }
+http-body-util   = "0.1"
+tower            = { version = "0.5", features = ["util"] }
 http             = "1"
 regex            = "1"
 ahash            = "0.8"
