@@ -18,8 +18,8 @@
 //!
 //! ### 写回路径统一
 //! 所有"写回 TUN"操作统一通过 `tun_write`：
-//! - 构建函数只返回原始 IP 包（不含 PI 头）
-//! - `tun_write` 在 Linux 下加 PI 头后写入
+//! - 构建函数只返回原始 IP 包
+//! - tun 0.8 所有平台均不含 PI 头，`tun_write` 直接写入
 //!
 //! ### TCP NAT 端口耗尽策略（参照 sing-tun）
 //! 端口循环分配；耗尽时驱逐 last_active 最旧的条目，不覆盖随机条目。
@@ -208,27 +208,15 @@ impl TcpNat {
 // ── 统一 TUN 写回辅助 ─────────────────────────────────────────────────────────
 
 /// 写回 TUN 设备。
-/// `raw_ip` 是**不含** PI 头的原始 IP 包；Linux 下本函数自动加 PI 头。
+/// `raw_ip` 是原始 IP 包（不含 PI 头）。
+/// tun 0.8 起所有平台包均不含 PI 头，直接写入即可。
 async fn tun_write(
     writer: &Mutex<impl AsyncWriteExt + Unpin + Send>,
     raw_ip: &[u8],
-    is_ipv6: bool,
+    _is_ipv6: bool,
 ) {
-    #[cfg(target_os = "linux")]
-    {
-        let proto: u16 = if is_ipv6 { 0x86DD } else { 0x0800 };
-        let mut out = Vec::with_capacity(4 + raw_ip.len());
-        out.extend_from_slice(&[0x00, 0x00, (proto >> 8) as u8, (proto & 0xff) as u8]);
-        out.extend_from_slice(raw_ip);
-        let mut guard = writer.lock().await;
-        let _ = guard.write_all(&out).await;
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = is_ipv6;
-        let mut guard = writer.lock().await;
-        let _ = guard.write_all(raw_ip).await;
-    }
+    let mut guard = writer.lock().await;
+    let _ = guard.write_all(raw_ip).await;
 }
 
 // ── TunInbound ────────────────────────────────────────────────────────────────
@@ -289,13 +277,12 @@ impl TunInbound {
         // ── 创建 TUN 设备 ────────────────────────────────────────────────────
         let (dev, if_name) = {
             let mut tun_cfg = tun::Configuration::default();
-            tun_cfg.mtu(cfg.mtu as i32);
+            tun_cfg.mtu(cfg.mtu as u16);
             tun_cfg.up();
 
-            // 接口名：Linux/macOS 直接使用配置值；Windows 由 wintun 决定，
-            // 配置的名字仅作为"期望名称"传入，实际名称在设备创建后读回。
+            // 接口名：tun_name() 是 tun 0.8 的新 API（name() 已废弃）
             if let Some(ref name) = cfg.interface_name {
-                tun_cfg.name(name);
+                tun_cfg.tun_name(name);
             }
 
             if let Some(ip) = inet4_addr {
@@ -315,10 +302,8 @@ impl TunInbound {
 
             #[cfg(target_os = "linux")]
             tun_cfg.platform_config(|p| {
-                // packet_information=true：Linux TUN 包前加 4 字节 PI 头，
-                // 用于区分 IPv4(0x0800) / IPv6(0x86DD)
-                p.packet_information(true);
-                // ensure_root_privileges：自动处理 /dev/net/tun 权限（tun 0.8 新增）
+                // tun 0.8 起所有平台包都**不含** PI 头（packet_information 已废弃）
+                // ensure_root_privileges：自动处理 /dev/net/tun 权限
                 p.ensure_root_privileges(true);
             });
 
@@ -493,10 +478,7 @@ impl TunInbound {
                 }
             };
 
-            // Linux TUN 带 4 字节 packet_information 头，剥掉后再处理
-            #[cfg(target_os = "linux")]
-            let pkt_slice = if n >= 4 { &pkt_buf[4..n] } else { continue };
-            #[cfg(not(target_os = "linux"))]
+            // tun 0.8：所有平台包均不含 PI 头（packet_information 已废弃）
             let pkt_slice = &pkt_buf[..n];
 
             if pkt_slice.is_empty() {
@@ -1001,7 +983,7 @@ fn build_udp_reply_v4(src: SocketAddrV4, dst: SocketAddrV4, payload: &[u8]) -> O
     let udp_len = (8 + payload.len()) as u16;
     let total_len = 20u16 + udp_len;
 
-    // 纯 IP 包，不含 PI 头（tun_write 负责加 PI）
+    // 纯 IP 包，不含 PI 头
     let mut pkt = Vec::with_capacity(total_len as usize);
 
     // IP header
