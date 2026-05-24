@@ -57,7 +57,7 @@ http             = "1"
 regex            = "1"
 ahash            = "0.8"
 fst              = "0.4"
-tun              = { version = "0.6", features = ["async"] }
+tun              = { version = "0.8", features = ["async"] }
 # outbound-net optional deps
 tokio-rustls        = { version = "0.26", optional = true }
 rustls              = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"], optional = true }
