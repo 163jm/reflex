@@ -717,6 +717,7 @@ impl ShadowsocksOutbound {
             xhttp_cfg,
             self.config.tls.as_ref(),
             &HashMap::new(),
+            self.routing_mark,
         )
         .await?;
 

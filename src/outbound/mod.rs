@@ -18,6 +18,7 @@ pub mod vless;
 #[cfg(feature = "outbound-net")]
 pub mod vmess;
 #[cfg(feature = "outbound-net")]
+#[cfg(feature = "outbound-net")]
 pub mod xhttp;
 
 use crate::dns::DnsResolver;

@@ -84,6 +84,7 @@ impl VmessOutbound {
                     xhttp_cfg,
                     if self.config.tls.enabled { Some(&self.config.tls) } else { None },
                     &HashMap::new(),
+                    self.routing_mark,
                 )
                 .await?;
                 Ok(Box::new(stream))

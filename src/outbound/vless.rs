@@ -256,6 +256,7 @@ impl VlessOutbound {
                 xhttp_cfg,
                 tls_cfg.as_ref(),
                 &HashMap::new(),
+                self.routing_mark,
             )
             .await?;
             return Ok(Box::new(VlessTcpStream::new(stream, header)));
