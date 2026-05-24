@@ -33,10 +33,16 @@
 //! strict_route 通过 Windows 防火墙（netsh advfirewall）实现 DNS 保护。
 //!
 //! ## 依赖
-//! `tun = { version = "0.6", features = ["async"] }`
-//!   - Linux: /dev/net/tun，packet_information=true，PI 头为 4 字节
-//!   - Windows: wintun，接口名通过配置传入
-//!   - macOS: /dev/utunX，无 PI 头
+//! `tun = { version = "0.8", features = ["async"] }`
+//!
+//! **tun 0.8 = tun2 合并版**：tun2 的作者（@ssrlive）已成为 tun crate 共同维护者，
+//! tun2 停止独立维护，代码全部并回 tun crate（0.7+）。相对 0.6 的关键变化：
+//!   - `platform(...)` → `platform_config(...)`
+//!   - Linux 新增 `p.ensure_root_privileges(true)`
+//!   - Windows 新增 `p.device_guid(u128)` 固定适配器 GUID
+//!   - Windows 底层从 `wintun 0.3`（需手动提供 DLL）换成 `wintun-bindings 0.7`
+//!     （**静态链接 DLL，无需用户手动拷贝**）
+//!   - `create_as_async` / `Configuration` 接口不变，直接升级即可
 
 use std::{
     collections::HashMap,
@@ -304,15 +310,44 @@ impl TunInbound {
                 }
             }
 
+            // ── 平台特有配置 ─────────────────────────────────────────────────
+            // tun 0.8（合并自 tun2）的 API：platform() → platform_config()
+
             #[cfg(target_os = "linux")]
-            tun_cfg.platform(|p| {
+            tun_cfg.platform_config(|p| {
+                // packet_information=true：Linux TUN 包前加 4 字节 PI 头，
+                // 用于区分 IPv4(0x0800) / IPv6(0x86DD)
                 p.packet_information(true);
+                // ensure_root_privileges：自动处理 /dev/net/tun 权限（tun 0.8 新增）
+                p.ensure_root_privileges(true);
             });
+
+            #[cfg(target_os = "windows")]
+            {
+                // device_guid：为 wintun 适配器指定固定 GUID，避免每次启动创建新适配器
+                // 用接口名做种子生成确定性 UUID（与 clash-rs 策略一致）
+                let guid_seed = cfg
+                    .interface_name
+                    .as_deref()
+                    .unwrap_or("tun0")
+                    .as_bytes();
+                // 简单 hash → u128（不依赖 uuid crate）
+                let mut guid: u128 = 0xdeadbeef_cafebabe_12345678_9abcdef0;
+                for (i, &b) in guid_seed.iter().enumerate() {
+                    guid ^= (b as u128).wrapping_shl((i % 16) as u32 * 8);
+                    guid = guid.wrapping_mul(0x6c62272e07bb0142_u128);
+                }
+                tun_cfg.platform_config(|p| {
+                    p.device_guid(guid);
+                });
+            }
 
             let dev = tun::create_as_async(&tun_cfg)
                 .map_err(|e| anyhow::anyhow!("failed to create TUN device: {e}"))?;
 
-            // 获取实际接口名（Windows 下 wintun 可能忽略配置的名字）
+            // 获取实际接口名。
+            // tun 0.8 在 Linux/macOS 下 dev.name() 返回内核分配的真实名称；
+            // Windows 下 wintun 适配器名由 device_guid 决定，仍用配置值。
             let if_name = cfg
                 .interface_name
                 .clone()
