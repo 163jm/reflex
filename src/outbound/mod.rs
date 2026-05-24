@@ -33,9 +33,6 @@ use tokio::net::TcpStream;
 /// 对已创建的 TCP socket（tokio::net::TcpStream）设置 SO_MARK。
 /// 仅 Linux 生效；其他平台为空操作（编译通过，无运行时开销）。
 #[allow(unused_variables)]
-/// 对已创建的 TCP socket（tokio::net::TcpStream）设置 SO_MARK。
-/// 仅 Linux 生效；其他平台为空操作（编译通过，无运行时开销）。
-#[allow(unused_variables)]
 pub fn apply_mark_to_tcp(stream: &TcpStream, mark: u32) -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
     {
