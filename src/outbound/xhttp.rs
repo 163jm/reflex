@@ -46,7 +46,7 @@ use hyper::{
     header::{HeaderName, HeaderValue, HOST},
     Method, Request, StatusCode, Uri,
 };
-use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use hyper_util::client::legacy::{Client};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
@@ -594,7 +594,7 @@ fn build_http_client(
     #[cfg(feature = "outbound-net")]
     let rustls_cfg: Option<Arc<rustls::ClientConfig>> = if tls_enabled {
         if let Some(tls_cfg) = tls {
-            Some(Arc::new(crate::outbound::tls::build_client_config(tls_cfg)?))
+            Some(crate::outbound::tls::build_client_config(tls_cfg)?)
         } else {
             None
         }
