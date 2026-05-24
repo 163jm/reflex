@@ -127,13 +127,17 @@ impl DnsResolver {
 
             upstreams.insert(
                 srv.tag.clone(),
-                Arc::new(DnsUpstream::from_config_full_with_reader(
-                    srv,
-                    detour,
-                    cf,
-                    cr,
-                    domain_resolver,
-                )?.with_mark(routing_mark).with_strategy(config.strategy)),
+                Arc::new(
+                    DnsUpstream::from_config_full_with_reader(
+                        srv,
+                        detour,
+                        cf,
+                        cr,
+                        domain_resolver,
+                    )?
+                    .with_mark(routing_mark)
+                    .with_strategy(config.strategy),
+                ),
             );
         }
 

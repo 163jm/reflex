@@ -118,7 +118,8 @@ fn evp_bytes_to_key(password: &[u8], key_len: usize) -> Vec<u8> {
 fn hkdf_sha1(master_key: &[u8], salt: &[u8], key_len: usize) -> Vec<u8> {
     let hk = Hkdf::<sha1::Sha1>::new(Some(salt), master_key);
     let mut okm = vec![0u8; key_len];
-    hk.expand(b"ss-subkey", &mut okm).expect("HKDF expand failed");
+    hk.expand(b"ss-subkey", &mut okm)
+        .expect("HKDF expand failed");
     okm
 }
 
@@ -145,7 +146,11 @@ struct AeadCipher {
 
 impl AeadCipher {
     fn new(method: Method, subkey: Vec<u8>) -> Self {
-        Self { method, subkey, counter: 0 }
+        Self {
+            method,
+            subkey,
+            counter: 0,
+        }
     }
 
     fn nonce(&self) -> [u8; 12] {
@@ -392,8 +397,8 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> S
 
 // MAX_PAYLOAD 和 TAG_LEN 已在文件顶部定义（第 97-98 行），此处不重复定义。
 
-impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>
-    tokio::io::AsyncRead for SsXhttpStream<S>
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> tokio::io::AsyncRead
+    for SsXhttpStream<S>
 {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
@@ -441,8 +446,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>
                             format!("SS AEAD len open: {e}"),
                         )));
                     }
-                    let mut payload_chunk =
-                        this.raw_buf[len_chunk_size..total_needed].to_vec();
+                    let mut payload_chunk = this.raw_buf[len_chunk_size..total_needed].to_vec();
                     if let Err(e) = this.dec.open(&mut payload_chunk) {
                         return Poll::Ready(Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
@@ -478,8 +482,8 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>
     }
 }
 
-impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>
-    tokio::io::AsyncWrite for SsXhttpStream<S>
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> tokio::io::AsyncWrite
+    for SsXhttpStream<S>
 {
     fn poll_write(
         self: std::pin::Pin<&mut Self>,
@@ -640,7 +644,12 @@ impl ShadowsocksOutbound {
             evp_bytes_to_key(config.password.as_bytes(), method.key_len())
         };
 
-        Ok(Self { config, method, key_material, routing_mark: 0 })
+        Ok(Self {
+            config,
+            method,
+            key_material,
+            routing_mark: 0,
+        })
     }
 
     pub fn with_mark(mut self, mark: u32) -> Self {
@@ -686,14 +695,28 @@ impl ShadowsocksOutbound {
             apply_mark_to_tcp(&stream, self.routing_mark)?;
             let (rd, mut wr) = tokio::io::split(stream);
             wr.write_all(&first_payload).await?;
-            let reader = SsReader { inner: rd, dec: AeadCipher::new(Method::None, Vec::new()) };
-            let writer = SsWriter { inner: wr, enc: AeadCipher::new(Method::None, Vec::new()) };
+            let reader = SsReader {
+                inner: rd,
+                dec: AeadCipher::new(Method::None, Vec::new()),
+            };
+            let writer = SsWriter {
+                inner: wr,
+                enc: AeadCipher::new(Method::None, Vec::new()),
+            };
             return Ok((reader, writer));
         }
 
         let salt = self.random_salt();
         let subkey = self.derive_subkey(&salt);
-        ss_connect(server_addr, self.method, subkey, salt, first_payload, self.routing_mark).await
+        ss_connect(
+            server_addr,
+            self.method,
+            subkey,
+            salt,
+            first_payload,
+            self.routing_mark,
+        )
+        .await
     }
 
     /// 通过 XHTTP 传输建立 Shadowsocks 连接，返回双工异步 IO
@@ -760,7 +783,10 @@ impl Outbound for ShadowsocksOutbound {
         debug!(tag = %self.config.tag, target = %conn.target, "shadowsocks tcp relay");
 
         // XHTTP 传输模式：使用泛型 SS 封装流
-        if matches!(&self.config.transport, Some(ShadowsocksTransportConfig::Xhttp(_))) {
+        if matches!(
+            &self.config.transport,
+            Some(ShadowsocksTransportConfig::Xhttp(_))
+        ) {
             let io = self.connect_ss_xhttp(&conn.target).await?;
             let (bytes_up, bytes_dn) = crate::outbound::relay(conn.stream, io).await;
             return Ok((bytes_up, bytes_dn));
@@ -778,7 +804,11 @@ impl Outbound for ShadowsocksOutbound {
         debug!(tag = %self.config.tag, target = %packet.target, "shadowsocks udp relay");
 
         let server_addr = self.server_addr().await?;
-        let local_bind = if server_addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+        let local_bind = if server_addr.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
         let udp = UdpSocket::bind(local_bind).await?;
         apply_mark_to_udp(&udp, self.routing_mark)?;
         udp.connect(server_addr).await?;

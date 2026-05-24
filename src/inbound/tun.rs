@@ -311,11 +311,7 @@ impl TunInbound {
             {
                 // device_guid：为 wintun 适配器指定固定 GUID，避免每次启动创建新适配器
                 // 用接口名做种子生成确定性 UUID（与 clash-rs 策略一致）
-                let guid_seed = cfg
-                    .interface_name
-                    .as_deref()
-                    .unwrap_or("tun0")
-                    .as_bytes();
+                let guid_seed = cfg.interface_name.as_deref().unwrap_or("tun0").as_bytes();
                 // 简单 hash → u128（不依赖 uuid crate）
                 let mut guid: u128 = 0xdeadbeef_cafebabe_12345678_9abcdef0;
                 for (i, &b) in guid_seed.iter().enumerate() {
@@ -352,7 +348,9 @@ impl TunInbound {
         if cfg.auto_route {
             match platform::setup(&cfg, &if_name) {
                 Ok(()) => info!(interface = %if_name, "tun: auto_route configured"),
-                Err(e) => warn!(err = %e, "tun: auto_route setup failed (requires elevated privileges)"),
+                Err(e) => {
+                    warn!(err = %e, "tun: auto_route setup failed (requires elevated privileges)")
+                }
             }
         }
 
@@ -618,7 +616,10 @@ async fn process_ipv4(
                 debug!("tun: ipv4 tcp fragment dropped");
                 return;
             }
-            handle_tcp_v4(raw, payload, src_ip, dst_ip, inet4_addr, inet4_next, tcp_port, writer, tcp_nat).await;
+            handle_tcp_v4(
+                raw, payload, src_ip, dst_ip, inet4_addr, inet4_next, tcp_port, writer, tcp_nat,
+            )
+            .await;
         }
         IPPROTO_UDP => {
             if more_fragments || frag_offset != 0 {
@@ -626,7 +627,17 @@ async fn process_ipv4(
                 return;
             }
             if let Some((src, dst, data)) = parse_udp_v4(payload, src_ip, dst_ip) {
-                dispatch_udp(src, dst, data, tag.clone(), udp_tx, writer, udp_sessions, udp_timeout).await;
+                dispatch_udp(
+                    src,
+                    dst,
+                    data,
+                    tag.clone(),
+                    udp_tx,
+                    writer,
+                    udp_sessions,
+                    udp_timeout,
+                )
+                .await;
             }
         }
         IPPROTO_ICMP => {
@@ -660,11 +671,24 @@ async fn process_ipv6(
 
     match raw[6] {
         IPPROTO_TCP => {
-            handle_tcp_v6(raw, payload, src_ip, dst_ip, inet6_addr, inet6_next, tcp_port, writer, tcp_nat).await;
+            handle_tcp_v6(
+                raw, payload, src_ip, dst_ip, inet6_addr, inet6_next, tcp_port, writer, tcp_nat,
+            )
+            .await;
         }
         IPPROTO_UDP => {
             if let Some((src, dst, data)) = parse_udp_v6(payload, src_ip, dst_ip) {
-                dispatch_udp(src, dst, data, tag.clone(), udp_tx, writer, udp_sessions, udp_timeout).await;
+                dispatch_udp(
+                    src,
+                    dst,
+                    data,
+                    tag.clone(),
+                    udp_tx,
+                    writer,
+                    udp_sessions,
+                    udp_timeout,
+                )
+                .await;
             }
         }
         IPPROTO_ICMPV6 => {
@@ -988,10 +1012,18 @@ fn build_udp_reply_v4(src: SocketAddrV4, dst: SocketAddrV4, payload: &[u8]) -> O
 
     // IP header
     pkt.extend_from_slice(&[
-        0x45, 0x00,
-        (total_len >> 8) as u8, (total_len & 0xff) as u8,
-        0x00, 0x00, 0x40, 0x00, // id=0, DF
-        64, IPPROTO_UDP, 0x00, 0x00, // TTL, proto, checksum=0
+        0x45,
+        0x00,
+        (total_len >> 8) as u8,
+        (total_len & 0xff) as u8,
+        0x00,
+        0x00,
+        0x40,
+        0x00, // id=0, DF
+        64,
+        IPPROTO_UDP,
+        0x00,
+        0x00, // TTL, proto, checksum=0
     ]);
     pkt.extend_from_slice(&src.ip().octets());
     pkt.extend_from_slice(&dst.ip().octets());
@@ -1134,10 +1166,18 @@ fn udp_checksum_v6(src: &[u8; 16], dst: &[u8; 16], udp: &[u8]) -> u16 {
 fn checksum_with_pseudo_v4(src: &[u8; 4], dst: &[u8; 4], proto: u8, data: &[u8]) -> u16 {
     let len = data.len() as u16;
     let pseudo = [
-        src[0], src[1], src[2], src[3],
-        dst[0], dst[1], dst[2], dst[3],
-        0, proto,
-        (len >> 8) as u8, (len & 0xff) as u8,
+        src[0],
+        src[1],
+        src[2],
+        src[3],
+        dst[0],
+        dst[1],
+        dst[2],
+        dst[3],
+        0,
+        proto,
+        (len >> 8) as u8,
+        (len & 0xff) as u8,
     ];
     let mut sum: u32 = 0;
     for chunk in pseudo.chunks_exact(2) {
@@ -1227,8 +1267,12 @@ mod platform {
                         vec![(a, b)]
                     } else {
                         let mut out = vec![];
-                        if a < lo { out.push((a, lo - 1)); }
-                        if b > hi { out.push((hi + 1, b)); }
+                        if a < lo {
+                            out.push((a, lo - 1));
+                        }
+                        if b > hi {
+                            out.push((hi + 1, b));
+                        }
                         out
                     }
                 })
@@ -1241,15 +1285,21 @@ mod platform {
         let mut result = vec![];
         let mut cur = lo;
         for &(a, b) in ranges {
-            if cur < a { result.push((cur, a - 1)); }
+            if cur < a {
+                result.push((cur, a - 1));
+            }
             cur = b.saturating_add(1);
         }
-        if cur <= hi { result.push((cur, hi)); }
+        if cur <= hi {
+            result.push((cur, hi));
+        }
         result
     }
 
     fn merge_ranges(mut ranges: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
-        if ranges.is_empty() { return ranges; }
+        if ranges.is_empty() {
+            return ranges;
+        }
         ranges.sort_unstable();
         let mut merged = vec![ranges[0]];
         for (a, b) in ranges.into_iter().skip(1) {
@@ -1330,12 +1380,32 @@ mod platform {
         if has_v4 {
             let (gw_ip, _) = addrs.inet4[0];
             let gw = std::net::Ipv4Addr::from(u32::from(gw_ip).wrapping_add(1));
-            ip(&["route", "add", "0.0.0.0/0", "via", &gw.to_string(), "dev", if_name, "table", &table]);
+            ip(&[
+                "route",
+                "add",
+                "0.0.0.0/0",
+                "via",
+                &gw.to_string(),
+                "dev",
+                if_name,
+                "table",
+                &table,
+            ]);
         }
         if has_v6 {
             let (gw_ip, _) = addrs.inet6[0];
             let gw = std::net::Ipv6Addr::from(u128::from(gw_ip).wrapping_add(1));
-            ip6(&["route", "add", "::/0", "via", &gw.to_string(), "dev", if_name, "table", &table]);
+            ip6(&[
+                "route",
+                "add",
+                "::/0",
+                "via",
+                &gw.to_string(),
+                "dev",
+                if_name,
+                "table",
+                &table,
+            ]);
         }
 
         // ── 策略规则（按优先级顺序添加）────────────────────────────────────
@@ -1348,11 +1418,29 @@ mod platform {
         for (lo, hi) in &excluded_uids {
             let uid_range = format!("{lo}-{hi}");
             if has_v4 {
-                ip(&["rule", "add", "priority", &p4.to_string(), "uidrange", &uid_range, "goto", &nop]);
+                ip(&[
+                    "rule",
+                    "add",
+                    "priority",
+                    &p4.to_string(),
+                    "uidrange",
+                    &uid_range,
+                    "goto",
+                    &nop,
+                ]);
                 p4 += 1;
             }
             if has_v6 {
-                ip6(&["rule", "add", "priority", &p6.to_string(), "uidrange", &uid_range, "goto", &nop]);
+                ip6(&[
+                    "rule",
+                    "add",
+                    "priority",
+                    &p6.to_string(),
+                    "uidrange",
+                    &uid_range,
+                    "goto",
+                    &nop,
+                ]);
                 p6 += 1;
             }
         }
@@ -1362,11 +1450,29 @@ mod platform {
             // 白名单：不在列表中的接口 goto nop，在列表中的跳过后续规则继续
             for iface in &cfg.include_interface {
                 if has_v4 {
-                    ip(&["rule", "add", "priority", &p4.to_string(), "iif", iface, "lookup", &table]);
+                    ip(&[
+                        "rule",
+                        "add",
+                        "priority",
+                        &p4.to_string(),
+                        "iif",
+                        iface,
+                        "lookup",
+                        &table,
+                    ]);
                     p4 += 1;
                 }
                 if has_v6 {
-                    ip6(&["rule", "add", "priority", &p6.to_string(), "iif", iface, "lookup", &table]);
+                    ip6(&[
+                        "rule",
+                        "add",
+                        "priority",
+                        &p6.to_string(),
+                        "iif",
+                        iface,
+                        "lookup",
+                        &table,
+                    ]);
                     p6 += 1;
                 }
             }
@@ -1383,11 +1489,29 @@ mod platform {
             // 黑名单：列表中的接口 goto nop
             for iface in &cfg.exclude_interface {
                 if has_v4 {
-                    ip(&["rule", "add", "priority", &p4.to_string(), "iif", iface, "goto", &nop]);
+                    ip(&[
+                        "rule",
+                        "add",
+                        "priority",
+                        &p4.to_string(),
+                        "iif",
+                        iface,
+                        "goto",
+                        &nop,
+                    ]);
                     p4 += 1;
                 }
                 if has_v6 {
-                    ip6(&["rule", "add", "priority", &p6.to_string(), "iif", iface, "goto", &nop]);
+                    ip6(&[
+                        "rule",
+                        "add",
+                        "priority",
+                        &p6.to_string(),
+                        "iif",
+                        iface,
+                        "goto",
+                        &nop,
+                    ]);
                     p6 += 1;
                 }
             }
@@ -1396,11 +1520,25 @@ mod platform {
         // 3. strict_route：为缺失地址族添加 unreachable 规则
         if cfg.strict_route {
             if !has_v4 {
-                ip(&["rule", "add", "priority", &p4.to_string(), "type", "unreachable"]);
+                ip(&[
+                    "rule",
+                    "add",
+                    "priority",
+                    &p4.to_string(),
+                    "type",
+                    "unreachable",
+                ]);
                 p4 += 1;
             }
             if !has_v6 {
-                ip6(&["rule", "add", "priority", &p6.to_string(), "type", "unreachable"]);
+                ip6(&[
+                    "rule",
+                    "add",
+                    "priority",
+                    &p6.to_string(),
+                    "type",
+                    "unreachable",
+                ]);
                 p6 += 1;
             }
         }
@@ -1409,13 +1547,31 @@ mod platform {
         for (ip_addr, prefix_len) in &addrs.inet4 {
             let net = v4_network(*ip_addr, *prefix_len);
             let dst = format!("{net}/{prefix_len}");
-            ip(&["rule", "add", "priority", &p4.to_string(), "to", &dst, "lookup", &table]);
+            ip(&[
+                "rule",
+                "add",
+                "priority",
+                &p4.to_string(),
+                "to",
+                &dst,
+                "lookup",
+                &table,
+            ]);
             p4 += 1;
         }
         for (ip_addr, prefix_len) in &addrs.inet6 {
             let net = v6_network(*ip_addr, *prefix_len);
             let dst = format!("{net}/{prefix_len}");
-            ip6(&["rule", "add", "priority", &p6.to_string(), "to", &dst, "lookup", &table]);
+            ip6(&[
+                "rule",
+                "add",
+                "priority",
+                &p6.to_string(),
+                "to",
+                &dst,
+                "lookup",
+                &table,
+            ]);
             p6 += 1;
         }
 
@@ -1423,51 +1579,125 @@ mod platform {
         //    正确写法：`ip rule add not iif lo lookup <table> suppress_prefixlength 0`
         if has_v4 {
             ip(&[
-                "rule", "add", "priority", &p4.to_string(),
-                "not", "iif", "lo",
-                "lookup", &table,
-                "suppress_prefixlength", "0",
+                "rule",
+                "add",
+                "priority",
+                &p4.to_string(),
+                "not",
+                "iif",
+                "lo",
+                "lookup",
+                &table,
+                "suppress_prefixlength",
+                "0",
             ]);
             p4 += 1;
         }
         if has_v6 {
             ip6(&[
-                "rule", "add", "priority", &p6.to_string(),
-                "not", "iif", "lo",
-                "lookup", &table,
-                "suppress_prefixlength", "0",
+                "rule",
+                "add",
+                "priority",
+                &p6.to_string(),
+                "not",
+                "iif",
+                "lo",
+                "lookup",
+                &table,
+                "suppress_prefixlength",
+                "0",
             ]);
             p6 += 1;
         }
 
         // 6. TUN 自身出站流量 → goto nop（避免环回）
         if has_v4 {
-            ip(&["rule", "add", "priority", &p4.to_string(), "iif", if_name, "goto", &nop]);
+            ip(&[
+                "rule",
+                "add",
+                "priority",
+                &p4.to_string(),
+                "iif",
+                if_name,
+                "goto",
+                &nop,
+            ]);
             p4 += 1;
         }
         if has_v6 {
-            ip6(&["rule", "add", "priority", &p6.to_string(), "iif", if_name, "goto", &nop]);
+            ip6(&[
+                "rule",
+                "add",
+                "priority",
+                &p6.to_string(),
+                "iif",
+                if_name,
+                "goto",
+                &nop,
+            ]);
             p6 += 1;
         }
 
         // 7. 非 loopback 出站 → TUN 表；loopback src 属于 TUN 子网 → TUN 表
         if has_v4 {
-            ip(&["rule", "add", "priority", &p4.to_string(), "not", "iif", "lo", "lookup", &table]);
+            ip(&[
+                "rule",
+                "add",
+                "priority",
+                &p4.to_string(),
+                "not",
+                "iif",
+                "lo",
+                "lookup",
+                &table,
+            ]);
             p4 += 1;
             for (ip_addr, prefix_len) in &addrs.inet4 {
                 let net = v4_network(*ip_addr, *prefix_len);
                 let src = format!("{net}/{prefix_len}");
-                ip(&["rule", "add", "priority", &p4.to_string(), "iif", "lo", "from", &src, "lookup", &table]);
+                ip(&[
+                    "rule",
+                    "add",
+                    "priority",
+                    &p4.to_string(),
+                    "iif",
+                    "lo",
+                    "from",
+                    &src,
+                    "lookup",
+                    &table,
+                ]);
                 p4 += 1;
             }
         }
         if has_v6 {
-            ip6(&["rule", "add", "priority", &p6.to_string(), "not", "iif", "lo", "lookup", &table]);
+            ip6(&[
+                "rule",
+                "add",
+                "priority",
+                &p6.to_string(),
+                "not",
+                "iif",
+                "lo",
+                "lookup",
+                &table,
+            ]);
             p6 += 1;
             for (ip_addr, prefix_len) in &addrs.inet6 {
                 let net = v6_network(*ip_addr, *prefix_len);
                 let src = format!("{net}/{prefix_len}");
-                ip6(&["rule", "add", "priority", &p6.to_string(), "iif", "lo", "from", &src, "lookup", &table]);
+                ip6(&[
+                    "rule",
+                    "add",
+                    "priority",
+                    &p6.to_string(),
+                    "iif",
+                    "lo",
+                    "from",
+                    &src,
+                    "lookup",
+                    &table,
+                ]);
                 p6 += 1;
             }
         }
@@ -1500,7 +1730,10 @@ mod platform {
         // 读取 setup 时记录的状态
         let state_file = format!("/tmp/reflex-tun-{}.state", cfg.iproute2_table_index);
         let (p4_max, p6_max, nop_prio) = if let Ok(s) = std::fs::read_to_string(&state_file) {
-            let parts: Vec<u32> = s.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            let parts: Vec<u32> = s
+                .split_whitespace()
+                .filter_map(|x| x.parse().ok())
+                .collect();
             if parts.len() == 3 {
                 (parts[0], parts[1], parts[2])
             } else {
@@ -1547,12 +1780,17 @@ mod platform {
     use tracing::{info, warn};
 
     const IPV4_SUB_RANGES: &[&str] = &[
-        "1.0.0.0/8", "2.0.0.0/7", "4.0.0.0/6", "8.0.0.0/5",
-        "16.0.0.0/4", "32.0.0.0/3", "64.0.0.0/2", "128.0.0.0/1",
+        "1.0.0.0/8",
+        "2.0.0.0/7",
+        "4.0.0.0/6",
+        "8.0.0.0/5",
+        "16.0.0.0/4",
+        "32.0.0.0/3",
+        "64.0.0.0/2",
+        "128.0.0.0/1",
     ];
     const IPV6_SUB_RANGES: &[&str] = &[
-        "100::/8", "200::/7", "400::/6", "800::/5",
-        "1000::/4", "2000::/3", "4000::/2", "8000::/1",
+        "100::/8", "200::/7", "400::/6", "800::/5", "1000::/4", "2000::/3", "4000::/2", "8000::/1",
     ];
 
     pub fn setup(cfg: &TunInboundConfig, if_name: &str) -> anyhow::Result<()> {
@@ -1573,13 +1811,22 @@ mod platform {
                 Some((IpAddr::V4(ip), _)) => {
                     Command::new("ifconfig")
                         .args([if_name, &ip.to_string(), &ip.to_string()])
-                        .output().ok();
+                        .output()
+                        .ok();
                     has_v4 = true;
                 }
                 Some((IpAddr::V6(ip), prefix_len)) => {
                     Command::new("ifconfig")
-                        .args([if_name, "inet6", &format!("{}/{}", ip, prefix_len), "prefixlen", &prefix_len.to_string(), "alias"])
-                        .output().ok();
+                        .args([
+                            if_name,
+                            "inet6",
+                            &format!("{}/{}", ip, prefix_len),
+                            "prefixlen",
+                            &prefix_len.to_string(),
+                            "alias",
+                        ])
+                        .output()
+                        .ok();
                     has_v6 = true;
                 }
                 None => warn!(addr = %addr_str, "tun: invalid address prefix"),
@@ -1589,34 +1836,60 @@ mod platform {
 
         if has_v4 {
             for &cidr in IPV4_SUB_RANGES {
-                Command::new("route").args(["add", "-net", cidr, "-interface", if_name]).output().ok();
+                Command::new("route")
+                    .args(["add", "-net", cidr, "-interface", if_name])
+                    .output()
+                    .ok();
             }
         }
         if has_v6 {
             for &cidr in IPV6_SUB_RANGES {
-                Command::new("route").args(["add", "-inet6", cidr, "-interface", if_name]).output().ok();
+                Command::new("route")
+                    .args(["add", "-inet6", cidr, "-interface", if_name])
+                    .output()
+                    .ok();
             }
         }
-        Command::new("dscacheutil").args(["-flushcache"]).output().ok();
+        Command::new("dscacheutil")
+            .args(["-flushcache"])
+            .output()
+            .ok();
         info!(interface = %if_name, "tun: auto_route configured (macOS)");
         Ok(())
     }
 
     pub fn teardown(cfg: &TunInboundConfig, if_name: &str) -> anyhow::Result<()> {
-        let has_v4 = cfg.address.iter().any(|a| parse_addr_prefix(a).map(|(ip, _)| ip.is_ipv4()).unwrap_or(false));
-        let has_v6 = cfg.address.iter().any(|a| parse_addr_prefix(a).map(|(ip, _)| ip.is_ipv6()).unwrap_or(false));
+        let has_v4 = cfg.address.iter().any(|a| {
+            parse_addr_prefix(a)
+                .map(|(ip, _)| ip.is_ipv4())
+                .unwrap_or(false)
+        });
+        let has_v6 = cfg.address.iter().any(|a| {
+            parse_addr_prefix(a)
+                .map(|(ip, _)| ip.is_ipv6())
+                .unwrap_or(false)
+        });
 
         if has_v4 {
             for &cidr in IPV4_SUB_RANGES {
-                Command::new("route").args(["delete", "-net", cidr]).output().ok();
+                Command::new("route")
+                    .args(["delete", "-net", cidr])
+                    .output()
+                    .ok();
             }
         }
         if has_v6 {
             for &cidr in IPV6_SUB_RANGES {
-                Command::new("route").args(["delete", "-inet6", cidr]).output().ok();
+                Command::new("route")
+                    .args(["delete", "-inet6", cidr])
+                    .output()
+                    .ok();
             }
         }
-        Command::new("dscacheutil").args(["-flushcache"]).output().ok();
+        Command::new("dscacheutil")
+            .args(["-flushcache"])
+            .output()
+            .ok();
         info!(interface = %if_name, "tun: auto_route cleaned up (macOS)");
         Ok(())
     }
@@ -1633,19 +1906,25 @@ mod platform {
 
     // IPv4/IPv6 非默认路由段（与 sing-tun / clash-rs 一致）
     const IPV4_SUB_RANGES: &[&str] = &[
-        "1.0.0.0/8", "2.0.0.0/7", "4.0.0.0/6", "8.0.0.0/5",
-        "16.0.0.0/4", "32.0.0.0/3", "64.0.0.0/2", "128.0.0.0/1",
+        "1.0.0.0/8",
+        "2.0.0.0/7",
+        "4.0.0.0/6",
+        "8.0.0.0/5",
+        "16.0.0.0/4",
+        "32.0.0.0/3",
+        "64.0.0.0/2",
+        "128.0.0.0/1",
     ];
     const IPV6_SUB_RANGES: &[&str] = &[
-        "100::/8", "200::/7", "400::/6", "800::/5",
-        "1000::/4", "2000::/3", "4000::/2", "8000::/1",
+        "100::/8", "200::/7", "400::/6", "800::/5", "1000::/4", "2000::/3", "4000::/2", "8000::/1",
     ];
 
     /// 用 PowerShell 获取接口索引（netsh 需要接口名而非索引）
     fn get_interface_index(if_name: &str) -> Option<u32> {
         let out = Command::new("powershell")
             .args([
-                "-NoProfile", "-Command",
+                "-NoProfile",
+                "-Command",
                 &format!(
                     "(Get-NetAdapter -Name '{}' -ErrorAction SilentlyContinue).ifIndex",
                     if_name
@@ -1688,9 +1967,15 @@ mod platform {
                     // 使用 netsh 配置 IP 地址（tun crate 在 Windows 上的 address() 无效）
                     let ok = Command::new("netsh")
                         .args([
-                            "interface", "ipv4", "set", "address",
-                            "name", if_name, "static",
-                            &ip.to_string(), &mask.to_string(),
+                            "interface",
+                            "ipv4",
+                            "set",
+                            "address",
+                            "name",
+                            if_name,
+                            "static",
+                            &ip.to_string(),
+                            &mask.to_string(),
                         ])
                         .output()
                         .map(|o| o.status.success())
@@ -1703,10 +1988,15 @@ mod platform {
                 Some((IpAddr::V6(ip), prefix_len)) => {
                     Command::new("netsh")
                         .args([
-                            "interface", "ipv6", "add", "address",
-                            if_name, &format!("{}/{}", ip, prefix_len),
+                            "interface",
+                            "ipv6",
+                            "add",
+                            "address",
+                            if_name,
+                            &format!("{}/{}", ip, prefix_len),
                         ])
-                        .output().ok();
+                        .output()
+                        .ok();
                     has_v6 = true;
                 }
                 None => warn!(addr = %addr_str, "tun: invalid address prefix"),
@@ -1717,15 +2007,33 @@ mod platform {
         if has_v4 {
             for &cidr in IPV4_SUB_RANGES {
                 Command::new("netsh")
-                    .args(["interface", "ipv4", "add", "route", cidr, if_name, "metric=1"])
-                    .output().ok();
+                    .args([
+                        "interface",
+                        "ipv4",
+                        "add",
+                        "route",
+                        cidr,
+                        if_name,
+                        "metric=1",
+                    ])
+                    .output()
+                    .ok();
             }
         }
         if has_v6 {
             for &cidr in IPV6_SUB_RANGES {
                 Command::new("netsh")
-                    .args(["interface", "ipv6", "add", "route", cidr, if_name, "metric=1"])
-                    .output().ok();
+                    .args([
+                        "interface",
+                        "ipv6",
+                        "add",
+                        "route",
+                        cidr,
+                        if_name,
+                        "metric=1",
+                    ])
+                    .output()
+                    .ok();
             }
         }
 
@@ -1733,17 +2041,29 @@ mod platform {
         if cfg.strict_route {
             // 先删除可能存在的旧规则，再添加新规则
             Command::new("netsh")
-                .args(["advfirewall", "firewall", "delete", "rule", "name=reflex-tun-strict"])
-                .output().ok();
+                .args([
+                    "advfirewall",
+                    "firewall",
+                    "delete",
+                    "rule",
+                    "name=reflex-tun-strict",
+                ])
+                .output()
+                .ok();
             Command::new("netsh")
                 .args([
-                    "advfirewall", "firewall", "add", "rule",
+                    "advfirewall",
+                    "firewall",
+                    "add",
+                    "rule",
                     "name=reflex-tun-strict",
-                    "protocol=UDP", "dir=out",
+                    "protocol=UDP",
+                    "dir=out",
                     "remoteport=53",
                     "action=block",
                 ])
-                .output().ok();
+                .output()
+                .ok();
             info!("tun: strict_route DNS block rule added (Windows)");
         }
 
@@ -1754,27 +2074,44 @@ mod platform {
     }
 
     pub fn teardown(cfg: &TunInboundConfig, if_name: &str) -> anyhow::Result<()> {
-        let has_v4 = cfg.address.iter().any(|a| parse_addr_prefix(a).map(|(ip, _)| ip.is_ipv4()).unwrap_or(false));
-        let has_v6 = cfg.address.iter().any(|a| parse_addr_prefix(a).map(|(ip, _)| ip.is_ipv6()).unwrap_or(false));
+        let has_v4 = cfg.address.iter().any(|a| {
+            parse_addr_prefix(a)
+                .map(|(ip, _)| ip.is_ipv4())
+                .unwrap_or(false)
+        });
+        let has_v6 = cfg.address.iter().any(|a| {
+            parse_addr_prefix(a)
+                .map(|(ip, _)| ip.is_ipv6())
+                .unwrap_or(false)
+        });
 
         if has_v4 {
             for &cidr in IPV4_SUB_RANGES {
                 Command::new("netsh")
                     .args(["interface", "ipv4", "delete", "route", cidr, if_name])
-                    .output().ok();
+                    .output()
+                    .ok();
             }
         }
         if has_v6 {
             for &cidr in IPV6_SUB_RANGES {
                 Command::new("netsh")
                     .args(["interface", "ipv6", "delete", "route", cidr, if_name])
-                    .output().ok();
+                    .output()
+                    .ok();
             }
         }
         if cfg.strict_route {
             Command::new("netsh")
-                .args(["advfirewall", "firewall", "delete", "rule", "name=reflex-tun-strict"])
-                .output().ok();
+                .args([
+                    "advfirewall",
+                    "firewall",
+                    "delete",
+                    "rule",
+                    "name=reflex-tun-strict",
+                ])
+                .output()
+                .ok();
         }
         Command::new("ipconfig").args(["/flushdns"]).output().ok();
         info!(interface = %if_name, "tun: auto_route cleaned up (Windows)");
@@ -1827,9 +2164,8 @@ mod tests {
     #[test]
     fn test_internet_checksum_nonzero() {
         let hdr = [
-            0x45u8, 0x00, 0x00, 0x3c, 0x1c, 0x46, 0x40, 0x00,
-            0x40, 0x06, 0x00, 0x00, 0xac, 0x10, 0x0a, 0x63,
-            0xac, 0x10, 0x0a, 0x0c,
+            0x45u8, 0x00, 0x00, 0x3c, 0x1c, 0x46, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00, 0xac, 0x10,
+            0x0a, 0x63, 0xac, 0x10, 0x0a, 0x0c,
         ];
         assert_ne!(internet_checksum(&hdr), 0);
     }
@@ -1864,7 +2200,9 @@ mod tests {
         let mut nat = TcpNat::new();
         // 填满端口池
         for i in 0..(NAT_PORT_END - NAT_PORT_START + 1) {
-            let src: SocketAddr = format!("10.0.{}.{}:1000", i / 256, i % 256).parse().unwrap();
+            let src: SocketAddr = format!("10.0.{}.{}:1000", i / 256, i % 256)
+                .parse()
+                .unwrap();
             let dst: SocketAddr = "8.8.8.8:80".parse().unwrap();
             nat.lookup_or_insert(src, dst);
         }
@@ -1906,7 +2244,9 @@ mod tests {
     fn test_udp_checksum_v4_nonzero() {
         let src = [8u8, 8, 8, 8];
         let dst = [192u8, 168, 1, 1];
-        let udp = [0x00, 0x35, 0x30, 0x39, 0x00, 0x0c, 0x00, 0x00, b'h', b'i', b'!', b'!']; // port 53→12345, len=12
+        let udp = [
+            0x00, 0x35, 0x30, 0x39, 0x00, 0x0c, 0x00, 0x00, b'h', b'i', b'!', b'!',
+        ]; // port 53→12345, len=12
         let cksum = udp_checksum_v4(&src, &dst, &udp);
         assert_ne!(cksum, 0);
     }
