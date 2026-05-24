@@ -223,7 +223,9 @@ pub struct TunInboundConfig {
     pub iproute2_table_index: u32,
 
     /// Linux 专用：`auto_route` 策略规则起始优先级，默认 9000。
-    /// 规则集占用 `[priority, priority+10]` 共 11 个优先级槽位。
+    /// 规则集实际占用的槽位数量取决于配置（UID 规则数、接口规则数、地址数等），
+    /// 建议预留至少 200 个优先级槽位（即不要在 `[priority, priority+200)` 内放其他规则）。
+    /// nop 锚点固定在 `priority + 100`，teardown 时根据 setup 记录的状态精确清理。
     #[serde(default = "default_iproute2_rule_index")]
     pub iproute2_rule_index: u32,
 
