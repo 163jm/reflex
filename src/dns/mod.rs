@@ -133,7 +133,7 @@ impl DnsResolver {
                     cf,
                     cr,
                     domain_resolver,
-                )?.with_mark(routing_mark)),
+                )?.with_mark(routing_mark).with_strategy(config.strategy)),
             );
         }
 
@@ -199,6 +199,20 @@ impl DnsResolver {
             }
         }
         None
+    }
+
+    /// 同步更新所有 fakeip upstream 的 strategy。
+    /// 在 global.ipv6=false 时调用，强制覆盖为 Ipv4Only。
+    pub fn set_fakeip_strategy(&self, s: crate::config::dns::ResolveStrategy) {
+        for upstream in self.upstreams.values() {
+            if let upstream::UpstreamKind::FakeIp { store } = &upstream.kind {
+                store.set_strategy(s);
+            }
+        }
+        // default upstream 也可能是 fakeip
+        if let upstream::UpstreamKind::FakeIp { store } = &self.default.kind {
+            store.set_strategy(s);
+        }
     }
 
     pub async fn resolve_domain(&self, host: &str) -> anyhow::Result<std::net::IpAddr> {

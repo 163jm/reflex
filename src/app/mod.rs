@@ -101,7 +101,10 @@ impl App {
                 config.global.routing_mark,
             )?;
             if !config.global.ipv6 {
+                // global.ipv6=false 强制 Ipv4Only，覆盖 dns.strategy 的任何设置
                 r.strategy = ResolveStrategy::Ipv4Only;
+                // 同步更新所有 fakeip upstream 的 strategy
+                r.set_fakeip_strategy(ResolveStrategy::Ipv4Only);
             }
             r
         });
@@ -255,7 +258,10 @@ impl App {
                 config.global.routing_mark,
             )?;
             if !config.global.ipv6 {
+                // global.ipv6=false 强制 Ipv4Only，覆盖 dns.strategy 的任何设置
                 r.strategy = ResolveStrategy::Ipv4Only;
+                // 同步更新所有 fakeip upstream 的 strategy
+                r.set_fakeip_strategy(ResolveStrategy::Ipv4Only);
             }
             r
         });

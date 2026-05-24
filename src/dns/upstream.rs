@@ -253,6 +253,14 @@ impl DnsUpstream {
         self
     }
 
+    /// 设置解析策略（同步到内部 fakeip store，如果有的话）。
+    pub fn with_strategy(self, s: crate::config::dns::ResolveStrategy) -> Self {
+        if let UpstreamKind::FakeIp { ref store } = self.kind {
+            store.set_strategy(s);
+        }
+        self
+    }
+
     /// 获取或创建与 addr 对应协议族的持久 UDP socket。
     async fn get_or_create_udp_socket(&self, addr: SocketAddr) -> anyhow::Result<Arc<UdpSocket>> {
         let slot = if addr.is_ipv6() {
@@ -1043,6 +1051,10 @@ pub struct FakeIpStore {
     cache_file: Option<Arc<CacheFile>>,
     exclude_domain: std::collections::HashSet<String>,
     exclude_domain_suffix: Vec<String>,
+    /// 控制 fakeip 响应哪种记录类型（与 DnsResolver.strategy 联动）。
+    /// 用 AtomicU8 存储，允许在 Arc<FakeIpStore> 下热更新（如 global.ipv6 变化时）。
+    /// 值含义：0=PreferIpv4, 1=PreferIpv6, 2=Ipv4Only, 3=Ipv6Only
+    pub strategy: std::sync::atomic::AtomicU8,
 }
 
 struct FakeIpInner {
@@ -1160,7 +1172,21 @@ impl FakeIpStore {
                     }
                 })
                 .collect(),
+            strategy: std::sync::atomic::AtomicU8::new(0), // 默认 PreferIpv4
         })
+    }
+
+    /// 设置 fakeip 的 strategy，与 ResolveStrategy 对应：
+    /// PreferIpv4=0, PreferIpv6=1, Ipv4Only=2, Ipv6Only=3
+    pub fn set_strategy(&self, s: crate::config::dns::ResolveStrategy) {
+        use crate::config::dns::ResolveStrategy::*;
+        let v = match s {
+            PreferIpv4 => 0,
+            PreferIpv6 => 1,
+            Ipv4Only   => 2,
+            Ipv6Only   => 3,
+        };
+        self.strategy.store(v, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn diag_sizes(&self) -> (usize, usize, usize) {
@@ -1222,12 +1248,23 @@ impl FakeIpStore {
             return make_nxdomain(query);
         }
 
+        // 读取当前 strategy：0=PreferIpv4, 1=PreferIpv6, 2=Ipv4Only, 3=Ipv6Only
+        let strat = self.strategy.load(std::sync::atomic::Ordering::Relaxed);
+
         if qtype == 1 {
+            // A 查询：Ipv6Only 时拒绝返回 IPv4 fakeip
+            if strat == 3 {
+                return make_noerror_empty(query);
+            }
             match self.allocate_v4(&qname) {
                 Some(ip) => build_a_response(query, ip),
                 None => make_noerror_empty(query),
             }
         } else {
+            // AAAA 查询：Ipv4Only 时拒绝返回 IPv6 fakeip
+            if strat == 2 {
+                return make_noerror_empty(query);
+            }
             match self.allocate_v6(&qname) {
                 Some(ip) => build_aaaa_response(query, ip),
                 None => make_noerror_empty(query),
