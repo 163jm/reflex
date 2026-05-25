@@ -205,7 +205,9 @@ impl ConnectionTracker {
     }
 
     fn snapshot(&self) -> Vec<ConnMeta> {
-        self.conns.read().unwrap().values().cloned().collect()
+        let mut v: Vec<ConnMeta> = self.conns.read().unwrap().values().cloned().collect();
+        v.sort_unstable_by_key(|c| c.id);
+        v
     }
 
     /// 按 id 删除单条连接（供 DELETE /connections/:id 使用）
