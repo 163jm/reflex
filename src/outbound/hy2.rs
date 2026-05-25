@@ -577,7 +577,7 @@ impl Outbound for Hy2Outbound {
         Ok(relay(conn.stream, hy2_io).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
         let (qconn, auth) = self.get_or_create_connection().await?;
 
         if !auth.udp_enabled {
@@ -588,6 +588,7 @@ impl Outbound for Hy2Outbound {
         let addr = target_to_addr_str(&packet.target);
 
         // 对超过 MAX_DATAGRAM_PAYLOAD 的包进行分片发送
+        let up = packet.data.len() as u64;
         send_udp_fragmented(&qconn, session_id, &addr, &packet.data)?;
 
         debug!(
@@ -603,7 +604,9 @@ impl Outbound for Hy2Outbound {
                 // 收到的包可能是分片，需要重组
                 match recv_udp_reassemble(&qconn, data).await {
                     Ok(Some(payload)) => {
+                        let down = payload.len() as u64;
                         let _ = packet.session.reply_tx.send((payload, packet.src)).await;
+                        return Ok((up, down));
                     }
                     Ok(None) => {} // 分片不完整，已超时丢弃
                     Err(e) => warn!(err = %e, "hy2 udp reassemble error"),
@@ -612,7 +615,7 @@ impl Outbound for Hy2Outbound {
             Ok(Err(e)) => warn!(err = %e, "hy2 udp recv error"),
             Err(_) => {} // timeout
         }
-        Ok(())
+        Ok((up, 0))
     }
 }
 

@@ -183,8 +183,8 @@ pub struct OutboundDelay {
 pub trait Outbound: Send + Sync + 'static {
     /// 处理一条 TCP 连接，返回 (上行字节数, 下行字节数)
     async fn handle_tcp(&self, conn: InboundTcpStream) -> anyhow::Result<(u64, u64)>;
-    /// 处理一个 UDP 包
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()>;
+    /// 处理一个 UDP 包，返回 (上行字节数, 下行字节数)
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)>;
     fn tag(&self) -> &str;
 
     /// 向下转型支持（用于 provider watcher 识别 SelectorOutbound / UrlTestOutbound）

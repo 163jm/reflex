@@ -518,9 +518,14 @@ async fn run_udp_session(
                     sniffed_protocol: None,
                     sniffed_domain: None,
                 };
-                if let Err(e) = ob.handle_udp(packet).await {
-                    debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
-                    // 出站报错不立即退出，继续等待下一个包（避免因单包错误中断整个会话）
+                match ob.handle_udp(packet).await {
+                    Ok((up, down)) => {
+                        conn_guard.add_bytes(up as i64, down as i64);
+                    }
+                    Err(e) => {
+                        debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
+                        // 出站报错不立即退出，继续等待下一个包（避免因单包错误中断整个会话）
+                    }
                 }
             }
             Ok(None) => {
@@ -643,9 +648,16 @@ async fn dispatch_udp(
                 },
                 &rule_info,
             );
-            let result = ob.handle_udp(packet).await;
-            drop(conn_guard);
-            result
+            match ob.handle_udp(packet).await {
+                Ok((up, down)) => {
+                    conn_guard.add_bytes(up as i64, down as i64);
+                    Ok(())
+                }
+                Err(e) => {
+                    drop(conn_guard);
+                    Err(e)
+                }
+            }
         }
         RouteAction::Sniff { .. } => {
             debug!("Sniff action reached dispatch_udp unexpectedly, dropping packet");

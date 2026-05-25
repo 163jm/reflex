@@ -798,7 +798,7 @@ impl Outbound for ShadowsocksOutbound {
         Ok(relay_ss(conn.stream, ss_rd, ss_wr).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
         use tokio::net::UdpSocket;
 
         debug!(tag = %self.config.tag, target = %packet.target, "shadowsocks udp relay");
@@ -828,6 +828,7 @@ impl Outbound for ShadowsocksOutbound {
             pkt.extend_from_slice(&addr_payload);
             pkt
         };
+        let up = packet.data.len() as u64;
         udp.send(&wire).await?;
 
         // 接收回包，简单去掉 salt 头后转发
@@ -836,17 +837,20 @@ impl Outbound for ShadowsocksOutbound {
         let salt_len = self.method.salt_len();
         let timeout = std::time::Duration::from_secs(10);
         let mut buf = vec![0u8; 65535];
+        let mut down = 0u64;
 
         loop {
             match tokio::time::timeout(timeout, udp.recv(&mut buf)).await {
                 Ok(Ok(n)) if n > salt_len + TAG_LEN => {
+                    let payload = &buf[salt_len..n];
+                    down += payload.len() as u64;
                     let _ = reply_tx
-                        .send((Bytes::copy_from_slice(&buf[salt_len..n]), src))
+                        .send((Bytes::copy_from_slice(payload), src))
                         .await;
                 }
                 _ => break,
             }
         }
-        Ok(())
+        Ok((up, down))
     }
 }

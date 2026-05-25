@@ -237,7 +237,7 @@ impl Outbound for TuicOutbound {
         Ok(relay(conn.stream, proxy_stream).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
         let conn = self.get_conn().await?;
         let session_id = self.udp_session.fetch_add(1, Ordering::Relaxed);
 
@@ -253,6 +253,7 @@ impl Outbound for TuicOutbound {
             &packet.data,
         );
 
+        let up = packet.data.len() as u64;
         conn.send_datagram(dgram)
             .map_err(|e| anyhow::anyhow!("tuic send datagram: {e}"))?;
 
@@ -262,12 +263,14 @@ impl Outbound for TuicOutbound {
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
         let timeout = Duration::from_secs(10);
+        let mut down = 0u64;
 
         loop {
             match tokio::time::timeout(timeout, conn.read_datagram()).await {
                 Ok(Ok(data)) => {
                     // 解析收到的 datagram，提取数据部分
                     if let Some(payload) = parse_udp_datagram_payload(&data) {
+                        down += payload.len() as u64;
                         let _ = reply_tx.send((payload, src)).await;
                     }
                 }
@@ -278,7 +281,7 @@ impl Outbound for TuicOutbound {
                 Err(_) => break, // timeout
             }
         }
-        Ok(())
+        Ok((up, down))
     }
 }
 

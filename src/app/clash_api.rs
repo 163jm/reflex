@@ -932,7 +932,7 @@ impl ClashApi {
             .iter()
             .map(|r| {
                 let (rule_type, payload) = if !r.ruleset.is_empty() {
-                    ("RULE-SET", r.ruleset.join(","))
+                    ("rule-set", r.ruleset.join(","))
                 } else if !r.domain.is_empty() {
                     ("DOMAIN", r.domain.join(","))
                 } else if !r.domain_suffix.is_empty() {

@@ -144,12 +144,13 @@ impl Outbound for DirectOutbound {
         Ok((up, down))
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
         let dst = resolve_target_with_dns(&packet.target, self.resolver.as_ref()).await?;
         debug!(tag=%self.config.tag, target=%packet.target, dst=%dst, "direct udp");
 
         // 每次创建独立 socket，彻底消除并发收包竞争（见 new_udp_socket 注释）
         let sock = self.new_udp_socket(dst).await?;
+        let up = packet.data.len() as u64;
         sock.send_to(&packet.data, dst).await?;
 
         let mut buf = vec![0u8; 65535];
@@ -163,22 +164,24 @@ impl Outbound for DirectOutbound {
                 if from != dst {
                     // 独立 socket 下几乎不会发生，但保留防御性检查
                     debug!(expected=%dst, got=%from, "direct udp: unexpected source, dropping");
-                    return Ok(());
+                    return Ok((up, 0));
                 }
+                let down = n as u64;
                 let _ = packet
                     .session
                     .reply_tx
                     .send((bytes::Bytes::copy_from_slice(&buf[..n]), packet.src))
                     .await;
+                Ok((up, down))
             }
-            Ok(Err(e)) => return Err(e.into()),
+            Ok(Err(e)) => Err(e.into()),
             Err(_) => {
                 // UDP 无响应超时，记录 debug 日志便于排查（不作为错误上报，
                 // 上层如需重试由调用方决策）
                 debug!(tag=%self.config.tag, dst=%dst, "direct udp: response timeout (5s)");
+                Ok((up, 0))
             }
         }
-        Ok(())
     }
 }
 
@@ -216,8 +219,8 @@ impl Outbound for BlockOutbound {
         Ok((0, 0))
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
         debug!(tag=%self.config.tag, target=%packet.target, "block udp");
-        Ok(())
+        Ok((0, 0))
     }
 }

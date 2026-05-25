@@ -342,7 +342,7 @@ impl Outbound for VlessOutbound {
         Ok(relay(conn.stream, io).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
         use crate::outbound::proto::{
             vless_build_udp_request, vless_decode_udp_frame_len, vless_encode_udp_frame,
         };
@@ -357,12 +357,14 @@ impl Outbound for VlessOutbound {
         let (mut reader, mut writer) = tokio::io::split(io);
 
         let frame = vless_encode_udp_frame(&packet.data);
+        let up = packet.data.len() as u64;
         writer.write_all(&frame).await?;
         writer.flush().await?;
 
         let timeout = std::time::Duration::from_secs(5);
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
+        let mut down = 0u64;
 
         loop {
             let mut len_buf = [0u8; 2];
@@ -382,9 +384,10 @@ impl Outbound for VlessOutbound {
                 Ok(Err(e)) => return Err(e.into()),
                 Err(_) => break,
             }
+            down += data_len as u64;
             let _ = reply_tx.send((bytes::Bytes::from(data), src)).await;
         }
-        Ok(())
+        Ok((up, down))
     }
 }
 

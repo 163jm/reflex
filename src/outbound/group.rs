@@ -281,7 +281,7 @@ impl Outbound for SelectorOutbound {
         Ok((up, down))
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
         let tag = self.current_tag();
         let outbound = lookup_outbound(&self.registry, &tag)?;
         debug!(group=%self.config.tag, selected=%tag, target=%packet.target, "selector udp");
@@ -620,7 +620,7 @@ impl Outbound for UrlTestOutbound {
         outbound.handle_tcp(conn).await
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
         let (tag, outbound) = self.selected_outbound().await?;
         debug!(group=%self.config.tag, selected=%tag, target=%packet.target, "url-test udp");
         outbound.handle_udp(packet).await

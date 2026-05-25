@@ -348,7 +348,7 @@ impl CompiledRule {
         };
 
         let rule_display = if !rule.ruleset.is_empty() {
-            ("RULE-SET".to_string(), rule.ruleset.join(","))
+            ("rule-set".to_string(), rule.ruleset.join(","))
         } else if !rule.domain.is_empty() {
             ("DOMAIN".to_string(), rule.domain.join(","))
         } else if !rule.domain_suffix.is_empty() {

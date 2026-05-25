@@ -306,7 +306,7 @@ impl SocksOutbound {
     /// 2. 绑定本地 UDP socket，向 relay 地址发送封装好的数据报
     /// 3. 读取响应，去掉 SOCKS5 UDP 头后通过 reply_tx 返回
     /// 4. TCP 控制连接保持到函数返回（drop 即可，代理会同时关闭 UDP relay）
-    async fn socks5_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn socks5_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
         // ── 1. UDP ASSOCIATE ───────────────────────────────────────────────────
         // 目标地址填 0.0.0.0:0（表示"我要发任意目标"，RFC 1928 §4）
         let placeholder = Target::Socket("0.0.0.0:0".parse()?);
@@ -524,7 +524,7 @@ impl Outbound for SocksOutbound {
         Ok((up, down))
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
         match self.version {
             SocksVersion::V5 => {
                 debug!(
@@ -540,7 +540,7 @@ impl Outbound for SocksOutbound {
                     target = %packet.target,
                     "socks4/4a does not support UDP, dropping packet"
                 );
-                Ok(())
+                Ok((0, 0))
             }
         }
     }
