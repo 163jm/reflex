@@ -24,8 +24,7 @@ use crate::{
     config::outbound::{VmessOutboundConfig, VmessTransportConfig, WsTransportConfig},
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
     outbound::{
-        apply_mark_to_tcp, relay, set_tcp_opts, tls::build_client_config, AsyncReadWrite, Outbound,
-        OutboundStatus,
+        apply_mark_to_tcp, relay, set_tcp_opts, tls::build_client_config, AsyncReadWrite, Outbound, OutboundStatus,
     },
 };
 
@@ -83,11 +82,7 @@ impl VmessOutbound {
                     &self.config.server,
                     self.config.server_port,
                     xhttp_cfg,
-                    if self.config.tls.enabled {
-                        Some(&self.config.tls)
-                    } else {
-                        None
-                    },
+                    if self.config.tls.enabled { Some(&self.config.tls) } else { None },
                     &HashMap::new(),
                     self.routing_mark,
                 )

@@ -24,6 +24,8 @@ outbound-net = [
     "dep:sha1", "dep:blake3",
 ]
 
+tun-windows = ["dep:wintun", "dep:windows-sys"]
+
 [dependencies]
 tikv-jemallocator = { version = "0.6", optional = true }
 serde            = { version = "1", features = ["derive"] }
@@ -57,7 +59,14 @@ http             = "1"
 regex            = "1"
 ahash            = "0.8"
 fst              = "0.4"
-tun              = { version = "0.8", features = ["async"] }
+tun2             = { version = "0.4", features = ["async"] }
+wintun           = { version = "0.3", optional = true }
+windows-sys      = { version = "0.59", features = [
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+], optional = true }
 # outbound-net optional deps
 tokio-rustls        = { version = "0.26", optional = true }
 rustls              = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"], optional = true }

@@ -20,10 +20,7 @@ use crate::{
     config::outbound::{BlockOutboundConfig, DirectOutboundConfig},
     dns::DnsResolver,
     inbound::{InboundTcpStream, InboundUdpPacket},
-    outbound::{
-        apply_mark_to_tcp, apply_mark_to_udp, relay, resolve_target_with_dns, set_tcp_opts,
-        Outbound, OutboundStatus,
-    },
+    outbound::{apply_mark_to_tcp, apply_mark_to_udp, relay, resolve_target_with_dns, set_tcp_opts, Outbound, OutboundStatus},
 };
 
 // ── Direct ────────────────────────────────────────────────────────────────────

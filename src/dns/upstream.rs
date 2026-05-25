@@ -343,11 +343,7 @@ impl DnsUpstream {
                         .await?
                     } else {
                         let sock = self.get_or_create_udp_socket(*addr).await?;
-                        timeout(
-                            self.timeout,
-                            udp_query_with_socket(sock, *addr, msg, self.routing_mark),
-                        )
-                        .await?
+                        timeout(self.timeout, udp_query_with_socket(sock, *addr, msg, self.routing_mark)).await?
                     }
                 }
 
@@ -439,11 +435,7 @@ impl DnsUpstream {
                         )
                         .await?
                     } else {
-                        timeout(
-                            self.timeout,
-                            dot_query(*addr, sni, tls_cfg.clone(), msg, self.routing_mark),
-                        )
-                        .await?
+                        timeout(self.timeout, dot_query(*addr, sni, tls_cfg.clone(), msg, self.routing_mark)).await?
                     }
                 }
 
@@ -463,11 +455,7 @@ impl DnsUpstream {
                         debug!(upstream=%self.tag,
                             "dns doq does not support TCP detour, falling back to direct");
                     }
-                    timeout(
-                        self.timeout,
-                        doq_query(*addr, sni, quic_cfg.clone(), msg, self.routing_mark),
-                    )
-                    .await?
+                    timeout(self.timeout, doq_query(*addr, sni, quic_cfg.clone(), msg, self.routing_mark)).await?
                 }
 
                 #[cfg(not(feature = "outbound-net"))]
@@ -1195,8 +1183,8 @@ impl FakeIpStore {
         let v = match s {
             PreferIpv4 => 0,
             PreferIpv6 => 1,
-            Ipv4Only => 2,
-            Ipv6Only => 3,
+            Ipv4Only   => 2,
+            Ipv6Only   => 3,
         };
         self.strategy.store(v, std::sync::atomic::Ordering::Relaxed);
     }

@@ -30,7 +30,9 @@ use tokio_tungstenite::{
 use tracing::debug;
 
 use crate::{
-    config::outbound::{VlessOutboundConfig, VlessTransportConfig, WsTransportConfig},
+    config::outbound::{
+        VlessOutboundConfig, VlessTransportConfig, WsTransportConfig,
+    },
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
     outbound::{apply_mark_to_tcp, relay, set_tcp_opts, tls::build_client_config, Outbound},
 };
@@ -71,11 +73,7 @@ impl VlessOutbound {
                 )
             }
         };
-        Ok(Self {
-            config,
-            tls_config,
-            routing_mark: 0,
-        })
+        Ok(Self { config, tls_config, routing_mark: 0 })
     }
 
     pub fn with_mark(mut self, mark: u32) -> Self {
@@ -160,13 +158,12 @@ impl VlessOutbound {
             );
         }
         let connector = if tls_enabled {
-            Some(tokio_tungstenite::Connector::Rustls(
-                self.tls_config.clone(),
-            ))
+            Some(tokio_tungstenite::Connector::Rustls(self.tls_config.clone()))
         } else {
             None
         };
-        let (ws_stream, _) = client_async_tls_with_config(request, tcp, None, connector).await?;
+        let (ws_stream, _) =
+            client_async_tls_with_config(request, tcp, None, connector).await?;
         Ok(ws_stream)
     }
 
@@ -228,9 +225,7 @@ impl VlessOutbound {
 
     /// 获取 TLS SNI
     fn tls_sni(&self) -> &str {
-        self.config
-            .tls
-            .as_ref()
+        self.config.tls.as_ref()
             .and_then(|t| t.server_name.as_deref())
             .unwrap_or(&self.config.server)
     }
@@ -244,11 +239,8 @@ impl VlessOutbound {
         if let Some(VlessTransportConfig::Xhttp(xhttp_cfg)) = &self.config.transport {
             use crate::outbound::xhttp;
             use std::collections::HashMap;
-            let tls_cfg = self
-                .config
-                .tls
-                .as_ref()
-                .map(|t| crate::config::outbound::TlsConfig {
+            let tls_cfg = self.config.tls.as_ref().map(|t| {
+                crate::config::outbound::TlsConfig {
                     enabled: t.enabled,
                     server_name: t.server_name.clone(),
                     insecure: t.insecure,
@@ -256,7 +248,8 @@ impl VlessOutbound {
                     alpn: t.alpn.clone(),
                     min_version: None,
                     max_version: None,
-                });
+                }
+            });
             let stream = xhttp::connect(
                 &self.config.server,
                 self.config.server_port,

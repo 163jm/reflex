@@ -32,7 +32,7 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     sync::{
-        atomic::Ordering,
+        atomic::{AtomicI64, Ordering},
         Arc,
     },
     task::{Context, Poll},
@@ -46,7 +46,7 @@ use hyper::{
     header::{HeaderName, HeaderValue, HOST},
     Method, Request, StatusCode, Uri,
 };
-use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::{Client};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
@@ -59,16 +59,6 @@ use uuid::Uuid;
 
 use crate::config::outbound::{TlsConfig, XhttpTransportConfig};
 use crate::outbound::{apply_mark_to_tcp, set_tcp_opts};
-
-// ── 平台兼容：32 位架构无 AtomicI64 ──────────────────────────────────────────
-#[cfg(target_pointer_width = "64")]
-type SeqAtomic = std::sync::atomic::AtomicI64;
-#[cfg(target_pointer_width = "64")]
-type SeqInt = i64;
-#[cfg(not(target_pointer_width = "64"))]
-type SeqAtomic = std::sync::atomic::AtomicI32;
-#[cfg(not(target_pointer_width = "64"))]
-type SeqInt = i32;
 
 // ── 公共接口 ─────────────────────────────────────────────────────────────────
 
@@ -119,7 +109,7 @@ pub async fn connect(
         base_url,
         session_id,
         headers,
-        seq: SeqAtomic::new(0),
+        seq: AtomicI64::new(0),
         max_post_bytes: cfg.sc_max_each_post_bytes.unwrap_or(1_000_000) as usize,
         min_post_interval_ms: cfg.sc_min_posts_interval_ms.unwrap_or(0),
         uplink_method: cfg
@@ -169,11 +159,7 @@ pub enum MaybeHttps {
 }
 
 impl tokio::io::AsyncRead for MaybeHttps {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
             MaybeHttps::Plain(s) => Pin::new(s).poll_read(cx, buf),
             #[cfg(feature = "outbound-net")]
@@ -183,11 +169,7 @@ impl tokio::io::AsyncRead for MaybeHttps {
 }
 
 impl tokio::io::AsyncWrite for MaybeHttps {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         match self.get_mut() {
             MaybeHttps::Plain(s) => Pin::new(s).poll_write(cx, buf),
             #[cfg(feature = "outbound-net")]
@@ -211,12 +193,10 @@ impl tokio::io::AsyncWrite for MaybeHttps {
 }
 
 impl hyper::rt::Read for MaybeHttps {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        mut buf: hyper::rt::ReadBufCursor<'_>,
-    ) -> Poll<io::Result<()>> {
-        let b = unsafe { &mut *(buf.as_mut() as *mut [std::mem::MaybeUninit<u8>] as *mut [u8]) };
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, mut buf: hyper::rt::ReadBufCursor<'_>) -> Poll<io::Result<()>> {
+        let b = unsafe {
+            &mut *(buf.as_mut() as *mut [std::mem::MaybeUninit<u8>] as *mut [u8])
+        };
         let mut rb = ReadBuf::new(b);
         match tokio::io::AsyncRead::poll_read(self, cx, &mut rb) {
             Poll::Ready(Ok(())) => {
@@ -231,11 +211,7 @@ impl hyper::rt::Read for MaybeHttps {
 }
 
 impl hyper::rt::Write for MaybeHttps {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         tokio::io::AsyncWrite::poll_write(self, cx, buf)
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -269,16 +245,8 @@ impl Service<Uri> for MarkedConnector {
         let tls_cfg: Option<Arc<rustls::ClientConfig>> = None;
 
         Box::pin(async move {
-            let host = uri
-                .host()
-                .ok_or_else(|| anyhow::anyhow!("xhttp: missing host in URI"))?;
-            let port = uri
-                .port_u16()
-                .unwrap_or(if uri.scheme_str() == Some("https") {
-                    443
-                } else {
-                    80
-                });
+            let host = uri.host().ok_or_else(|| anyhow::anyhow!("xhttp: missing host in URI"))?;
+            let port = uri.port_u16().unwrap_or(if uri.scheme_str() == Some("https") { 443 } else { 80 });
 
             // DNS 解析
             let addr: SocketAddr = tokio::net::lookup_host(format!("{host}:{port}"))
@@ -296,9 +264,7 @@ impl Service<Uri> for MarkedConnector {
                 let sni = rustls::pki_types::ServerName::try_from(host.to_string())
                     .map_err(|e| anyhow::anyhow!("xhttp: invalid SNI {host}: {e}"))?;
                 let connector = tokio_rustls::TlsConnector::from(tls);
-                let tls_stream = connector
-                    .connect(sni, tcp)
-                    .await
+                let tls_stream = connector.connect(sni, tcp).await
                     .map_err(|e| anyhow::anyhow!("xhttp: TLS handshake failed: {e}"))?;
                 return Ok(MaybeHttps::Tls(tls_stream));
             }
@@ -316,24 +282,17 @@ type XhttpClient = Client<MarkedConnector, XhttpBody>;
 enum XhttpBody {
     Empty(Empty<Bytes>),
     Full(Full<Bytes>),
-    Stream(
-        StreamBody<
-            futures_util::stream::Map<
-                ReceiverStream<Bytes>,
-                fn(Bytes) -> Result<Frame<Bytes>, io::Error>,
-            >,
-        >,
-    ),
+    Stream(StreamBody<futures_util::stream::Map<
+        ReceiverStream<Bytes>,
+        fn(Bytes) -> Result<Frame<Bytes>, io::Error>,
+    >>),
 }
 
 impl hyper::body::Body for XhttpBody {
     type Data = Bytes;
     type Error = io::Error;
 
-    fn poll_frame(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+    fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         match self.get_mut() {
             XhttpBody::Empty(b) => Pin::new(b).poll_frame(cx).map_err(|_| unreachable!()),
             XhttpBody::Full(b) => Pin::new(b).poll_frame(cx).map_err(|_| unreachable!()),
@@ -343,12 +302,8 @@ impl hyper::body::Body for XhttpBody {
 }
 
 fn stream_body(rx: mpsc::Receiver<Bytes>) -> XhttpBody {
-    fn wrap(b: Bytes) -> Result<Frame<Bytes>, io::Error> {
-        Ok(Frame::data(b))
-    }
-    XhttpBody::Stream(StreamBody::new(
-        ReceiverStream::new(rx).map(wrap as fn(Bytes) -> Result<Frame<Bytes>, io::Error>),
-    ))
+    fn wrap(b: Bytes) -> Result<Frame<Bytes>, io::Error> { Ok(Frame::data(b)) }
+    XhttpBody::Stream(StreamBody::new(ReceiverStream::new(rx).map(wrap as fn(Bytes) -> Result<Frame<Bytes>, io::Error>)))
 }
 
 // ── 内部共享状态 ──────────────────────────────────────────────────────────────
@@ -358,7 +313,7 @@ struct XhttpShared {
     base_url: String,
     session_id: Option<String>,
     headers: HashMap<String, String>,
-    seq: SeqAtomic,
+    seq: AtomicI64,
     max_post_bytes: usize,
     min_post_interval_ms: u64,
     uplink_method: String,
@@ -384,19 +339,14 @@ impl XhttpShared {
         }
     }
 
-    fn packet_url(&self, seq: SeqInt) -> String {
+    fn packet_url(&self, seq: i64) -> String {
         match &self.session_id {
             Some(sid) => format!("{}{}?session={}&seq={}", self.base_url, seq, sid, seq),
             None => format!("{}{}", self.base_url, seq),
         }
     }
 
-    fn build_request(
-        &self,
-        method: &Method,
-        url: &str,
-        body: XhttpBody,
-    ) -> anyhow::Result<Request<XhttpBody>> {
+    fn build_request(&self, method: &Method, url: &str, body: XhttpBody) -> anyhow::Result<Request<XhttpBody>> {
         let uri: Uri = url.parse()?;
         let host = uri.host().unwrap_or("").to_string();
         let mut req = Request::builder()
@@ -503,7 +453,7 @@ async fn connect_packet_up(shared: Arc<XhttpShared>) -> anyhow::Result<XhttpStre
 }
 
 async fn post_packet(shared: &XhttpShared, payload: Bytes) -> anyhow::Result<()> {
-    let seq: SeqInt = shared.seq.fetch_add(1, Ordering::Relaxed);
+    let seq = shared.seq.fetch_add(1, Ordering::Relaxed);
     let url = shared.packet_url(seq);
     let method = parse_method(&shared.uplink_method);
     let req = shared.build_request(&method, &url, XhttpBody::Full(Full::new(payload)))?;
@@ -534,27 +484,18 @@ impl RespBodyReader {
                         }
                     }
                     Some(Err(e)) => {
-                        let _ = tx
-                            .send(Err(io::Error::new(io::ErrorKind::BrokenPipe, e)))
-                            .await;
+                        let _ = tx.send(Err(io::Error::new(io::ErrorKind::BrokenPipe, e))).await;
                         break;
                     }
                 }
             }
         });
-        Self {
-            rx,
-            current: Bytes::new(),
-        }
+        Self { rx, current: Bytes::new() }
     }
 }
 
 impl AsyncRead for RespBodyReader {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         if !this.current.is_empty() {
             let n = buf.remaining().min(this.current.len());
@@ -567,9 +508,7 @@ impl AsyncRead for RespBodyReader {
             Poll::Ready(None) => Poll::Ready(Ok(())),
             Poll::Ready(Some(Err(e))) => Poll::Ready(Err(e)),
             Poll::Ready(Some(Ok(chunk))) => {
-                if chunk.is_empty() {
-                    return Poll::Ready(Ok(()));
-                }
+                if chunk.is_empty() { return Poll::Ready(Ok(())); }
                 let n = buf.remaining().min(chunk.len());
                 buf.put_slice(&chunk[..n]);
                 if n < chunk.len() {
@@ -600,21 +539,13 @@ impl XhttpStream {
 }
 
 impl AsyncRead for XhttpStream {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.get_mut().reader).poll_read(cx, buf)
     }
 }
 
 impl AsyncWrite for XhttpStream {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        data: &[u8],
-    ) -> Poll<io::Result<usize>> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, data: &[u8]) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
         let tx = match &this.writer {
             XhttpWriter::Stream(tx) | XhttpWriter::Packet(tx) => tx.clone(),
