@@ -389,21 +389,13 @@ impl XhttpShared {
     ) -> anyhow::Result<Request<XhttpBody>> {
         let uri: Uri = url.parse()?;
         let host = uri.host().unwrap_or("").to_string();
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method(method)
             .uri(uri)
             .header(HOST, &host)
             .body(body)?;
         // apply custom headers（覆盖同名 header）
-        for (k, v) in &self.headers {
-            if let (Ok(name), Ok(val)) = (
-                HeaderName::from_bytes(k.as_bytes()),
-                HeaderValue::from_str(v),
-            ) {
-                req.headers_mut().insert(name, val);
-            }
-        }
-        Ok(req)
+        Ok(self.apply_headers(req))
     }
 }
 
