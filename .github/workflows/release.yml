@@ -198,6 +198,16 @@ jobs:
           echo "=== checksums.txt ==="
           cat checksums.txt
 
+      - name: Delete existing pre-releases and their tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 列出所有 pre-release，逐个删除 release 和对应 tag
+          gh release list --limit 100 --json tagName,isPrerelease             --jq '.[] | select(.isPrerelease) | .tagName'           | while read -r tag; do
+              echo "Deleting pre-release and tag: $tag"
+              gh release delete "$tag" --yes --cleanup-tag || true
+            done
+
       - name: Create and push tag
         run: |
           VERSION="${{ needs.validate.outputs.version }}"
