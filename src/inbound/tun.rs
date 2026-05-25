@@ -337,11 +337,11 @@ impl TunInbound {
                 .map_err(|e| anyhow::anyhow!("failed to create TUN device: {e}"))?;
 
             // 获取实际接口名。
-            // tun 0.8 在 Linux/macOS 下 dev.name() 返回内核分配的真实名称；
+            // tun 0.8 在 Linux/macOS 下 dev.tun_name() 返回内核分配的真实名称；
             // Windows 下 wintun 适配器名由 device_guid 决定，以 PowerShell 查询为准。
             #[cfg(not(target_os = "windows"))]
             let if_name = {
-                match dev.name() {
+                match dev.tun_name() {
                     Ok(name) if !name.is_empty() => name,
                     _ => cfg.interface_name.clone().unwrap_or_else(|| "tun0".to_string()),
                 }
