@@ -32,13 +32,7 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     sync::{
-        atomic::{
-            #[cfg(target_pointer_width = "64")]
-            AtomicI64,
-            #[cfg(not(target_pointer_width = "64"))]
-            AtomicI32,
-            Ordering,
-        },
+        atomic::Ordering,
         Arc,
     },
     task::{Context, Poll},
