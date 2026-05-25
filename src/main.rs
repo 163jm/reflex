@@ -3,7 +3,7 @@ use anyhow::Context as _;
 use reflex::app::App;
 use reflex::config::log::LogLevel;
 use std::{env, fs, net::IpAddr, process};
-use tracing::{error, info};
+use tracing::info;
 
 use reflex::ruleset::{CompiledRuleSet, LoadedRuleSet, MatchTarget, RuleSet};
 
