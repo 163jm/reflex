@@ -609,15 +609,13 @@ async fn dispatch_tcp(
                 },
                 &rule_info,
             );
-            match {
-                let (live_up, live_down) = conn_guard
-                    .live_counters()
-                    .unwrap_or_else(|| (
-                        std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
-                        std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
-                    ));
-                ob.handle_tcp_live(conn, live_up, live_down).await
-            } {
+            let (live_up, live_down) = conn_guard
+                .live_counters()
+                .unwrap_or_else(|| (
+                    std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                    std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                ));
+            match ob.handle_tcp_live(conn, live_up, live_down).await {
                 Ok((up, down)) => {
                     guard.add_bytes(up, down);
                     Ok(())
