@@ -625,7 +625,11 @@ async fn udp_query_with_socket(
 
 // ── 协议实现：TCP ─────────────────────────────────────────────────────────────
 
-async fn tcp_query(addr: SocketAddr, msg: Bytes, #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] mark: u32) -> anyhow::Result<Bytes> {
+async fn tcp_query(
+    addr: SocketAddr,
+    msg: Bytes,
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] mark: u32,
+) -> anyhow::Result<Bytes> {
     let mut stream = TcpStream::connect(addr)
         .await
         .map_err(|e| anyhow::anyhow!("TCP connect to {addr} failed: {e}"))?;
