@@ -313,9 +313,16 @@ impl Dispatcher {
                         rule_payload: rule_payload.to_string(),
                     };
 
-                    // UDP 不支持嗅探，Sniff action 降级为默认路由
+                    // UDP 不支持嗅探，跳过 Sniff 规则后继续向后匹配（与 TCP 对称）。
+                    // 原来直接用 default_action 会跳过所有后续规则，导致非 fakeip 场景下
+                    // 所有 UDP 流量都落到 final，产生无法复用的 session 并堆积内存。
                     let action = if matches!(action, RouteAction::Sniff { .. }) {
-                        self.router.default_action().clone()
+                        let (a, rt, rp) = self.router.route_udp_after_sniff(&packet);
+                        rule_info = RuleInfo {
+                            rule_type: rt.to_string(),
+                            rule_payload: rp.to_string(),
+                        };
+                        a.clone()
                     } else {
                         action
                     };
