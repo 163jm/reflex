@@ -251,6 +251,7 @@ pub struct ClashApi {
 }
 
 impl ClashApi {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: ClashApiConfig,
         outbound_mgr: Arc<OutboundManager>,
