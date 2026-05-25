@@ -240,15 +240,15 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> AsyncReadWrite for T {}
 
 // ── 双向转发 ──────────────────────────────────────────────────────────────────
 
-/// 在两个异步读写流之间双向透明转发，支持 TCP half-close。
-///
-/// 参照 sing-box `connectionCopy`：某方向读到 EOF 后调用对端的 `shutdown()`
-/// 发送 TCP FIN，让对端能干净地感知到写端关闭，而不是悬挂等待超时。
-///
-/// 使用 64 KiB buffer（sing-box 批量 size），相比默认 8 KiB 对大流量吞吐
-/// 提升明显（减少系统调用次数）。
-///
-/// 返回 `(a→b 字节数, b→a 字节数)`。
+// 在两个异步读写流之间双向透明转发，支持 TCP half-close。
+//
+// 参照 sing-box `connectionCopy`：某方向读到 EOF 后调用对端的 `shutdown()`
+// 发送 TCP FIN，让对端能干净地感知到写端关闭，而不是悬挂等待超时。
+//
+// 使用 64 KiB buffer（sing-box 批量 size），相比默认 8 KiB 对大流量吞吐
+// 提升明显（减少系统调用次数）。
+//
+// 返回 `(a→b 字节数, b→a 字节数)`。
 
 // ── CountedStream：包装任意 AsyncRead+AsyncWrite，实时更新计数器 ───────────────
 
