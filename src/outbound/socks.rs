@@ -351,6 +351,7 @@ impl SocksOutbound {
             }
         }
         dgram.extend_from_slice(&packet.data);
+        let up = packet.data.len() as u64;
 
         // ── 3. 发送并接收 ─────────────────────────────────────────────────────
         let local_bind = if relay_addr.is_ipv6() {
@@ -370,13 +371,14 @@ impl SocksOutbound {
 
         // ── 4. 去掉 SOCKS5 UDP 头，取出 payload ──────────────────────────────
         let payload = socks5_udp_strip_header(&buf[..n])?;
+        let down = payload.len() as u64;
         let _ = packet
             .session
             .reply_tx
             .send((bytes::Bytes::copy_from_slice(payload), packet.src))
             .await;
 
-        Ok(())
+        Ok((up, down))
     }
 
     /// 发起 UDP ASSOCIATE 并返回代理分配的 UDP relay 地址。
