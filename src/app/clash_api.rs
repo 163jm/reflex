@@ -150,7 +150,9 @@ impl ConnGuard {
 
     /// 返回实时上传/下载计数器的 Arc 引用，供 relay_tracked 实时更新。
     pub fn live_counters(&self) -> Option<(Arc<AtomicI64>, Arc<AtomicI64>)> {
-        self.tracker.get(self.id).map(|meta| (meta.upload.clone(), meta.download.clone()))
+        self.tracker
+            .get(self.id)
+            .map(|meta| (meta.upload.clone(), meta.download.clone()))
     }
 }
 

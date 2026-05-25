@@ -383,9 +383,10 @@ impl RuleSet {
                 exact.as_ref().map(|s| s.len()).unwrap_or(0)
                     + suffix.as_ref().map(|s| s.len()).unwrap_or(0)
             }
-            DomainMatcher::Legacy { domains, suffix_trie } => {
-                domains.len() + suffix_trie.len()
-            }
+            DomainMatcher::Legacy {
+                domains,
+                suffix_trie,
+            } => domains.len() + suffix_trie.len(),
         };
         let keyword_count = self.keywords.len();
         let regex_count = self.regexes.as_ref().map(|r| r.len()).unwrap_or(0);

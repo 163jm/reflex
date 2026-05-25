@@ -345,7 +345,10 @@ impl TunInbound {
             let if_name = {
                 match dev.tun_name() {
                     Ok(name) if !name.is_empty() => name,
-                    _ => cfg.interface_name.clone().unwrap_or_else(|| "tun0".to_string()),
+                    _ => cfg
+                        .interface_name
+                        .clone()
+                        .unwrap_or_else(|| "tun0".to_string()),
                 }
             };
 
@@ -2152,14 +2155,20 @@ mod platform {
             // 清理旧规则
             Command::new("netsh")
                 .args([
-                    "advfirewall", "firewall", "delete", "rule",
+                    "advfirewall",
+                    "firewall",
+                    "delete",
+                    "rule",
                     "name=reflex-tun-strict-allow",
                 ])
                 .output()
                 .ok();
             Command::new("netsh")
                 .args([
-                    "advfirewall", "firewall", "delete", "rule",
+                    "advfirewall",
+                    "firewall",
+                    "delete",
+                    "rule",
                     "name=reflex-tun-strict-block",
                 ])
                 .output()
@@ -2169,7 +2178,10 @@ mod platform {
             if let Some(exe) = current_exe_path() {
                 let ok = Command::new("netsh")
                     .args([
-                        "advfirewall", "firewall", "add", "rule",
+                        "advfirewall",
+                        "firewall",
+                        "add",
+                        "rule",
                         "name=reflex-tun-strict-allow",
                         "protocol=UDP",
                         "dir=out",
@@ -2192,7 +2204,10 @@ mod platform {
             // 规则2：阻断其他所有进程的 UDP/53 出站
             Command::new("netsh")
                 .args([
-                    "advfirewall", "firewall", "add", "rule",
+                    "advfirewall",
+                    "firewall",
+                    "add",
+                    "rule",
                     "name=reflex-tun-strict-block",
                     "protocol=UDP",
                     "dir=out",
@@ -2241,14 +2256,20 @@ mod platform {
         if cfg.strict_route {
             Command::new("netsh")
                 .args([
-                    "advfirewall", "firewall", "delete", "rule",
+                    "advfirewall",
+                    "firewall",
+                    "delete",
+                    "rule",
                     "name=reflex-tun-strict-allow",
                 ])
                 .output()
                 .ok();
             Command::new("netsh")
                 .args([
-                    "advfirewall", "firewall", "delete", "rule",
+                    "advfirewall",
+                    "firewall",
+                    "delete",
+                    "rule",
                     "name=reflex-tun-strict-block",
                 ])
                 .output()

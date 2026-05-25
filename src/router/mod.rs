@@ -98,10 +98,13 @@ impl Router {
         for rs_ref in &config.rule_set {
             let rs = load_ruleset_ref(rs_ref, cache_reader, cache_writer)?;
             let rc = rs.rule_count();
-            ruleset_meta.insert(rs_ref.tag.clone(), RuleSetMeta {
-                rule_count: rc,
-                updated_at_ms: now_ms(),
-            });
+            ruleset_meta.insert(
+                rs_ref.tag.clone(),
+                RuleSetMeta {
+                    rule_count: rc,
+                    updated_at_ms: now_ms(),
+                },
+            );
             rulesets.insert(rs_ref.tag.clone(), Arc::new(rs));
         }
 
@@ -184,9 +187,10 @@ impl Router {
             anyhow::bail!("rule_set '{tag}' is not remote, cannot update");
         }
 
-        let url = rs_ref.url.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("rule_set '{tag}': missing url")
-        })?;
+        let url = rs_ref
+            .url
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("rule_set '{tag}': missing url"))?;
 
         // 强制从网络重新下载（忽略磁盘缓存）
         let data = download_bytes(url, tag)?;
@@ -205,10 +209,13 @@ impl Router {
         let rs = RuleSet::from_loaded(loaded)?;
         let rc = rs.rule_count();
         self.rulesets.insert(tag.to_string(), Arc::new(rs));
-        self.ruleset_meta.insert(tag.to_string(), RuleSetMeta {
-            rule_count: rc,
-            updated_at_ms: now_ms(),
-        });
+        self.ruleset_meta.insert(
+            tag.to_string(),
+            RuleSetMeta {
+                rule_count: rc,
+                updated_at_ms: now_ms(),
+            },
+        );
         tracing::info!(tag, rule_count = rc, "rule_set: refreshed");
         Ok(())
     }

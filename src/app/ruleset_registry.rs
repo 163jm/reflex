@@ -69,11 +69,9 @@ impl RuleSetRegistry {
         let path = rs_ref.path.clone();
 
         // 阻塞下载放到专用线程池，避免阻塞 tokio 工作线程
-        let data = tokio::task::spawn_blocking(move || {
-            download_bytes(&url, &tag_owned)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn_blocking panicked: {e}"))??;
+        let data = tokio::task::spawn_blocking(move || download_bytes(&url, &tag_owned))
+            .await
+            .map_err(|e| anyhow::anyhow!("spawn_blocking panicked: {e}"))??;
 
         // 覆盖磁盘缓存
         if let Some(ref p) = path {

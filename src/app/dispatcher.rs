@@ -502,12 +502,12 @@ async fn run_udp_session(
     );
 
     // 获取实时计数器，用于 UDP 字节统计
-    let (live_up, live_down) = conn_guard
-        .live_counters()
-        .unwrap_or_else(|| (
+    let (live_up, live_down) = conn_guard.live_counters().unwrap_or_else(|| {
+        (
             std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
             std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
-        ));
+        )
+    });
 
     // 从 data_rx 持续收包，每包构造一个 InboundUdpPacket 交给出站
     // 出站的回包通过 reply_tx 发回入站
@@ -609,12 +609,12 @@ async fn dispatch_tcp(
                 },
                 &rule_info,
             );
-            let (live_up, live_down) = conn_guard
-                .live_counters()
-                .unwrap_or_else(|| (
+            let (live_up, live_down) = conn_guard.live_counters().unwrap_or_else(|| {
+                (
                     std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
                     std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
-                ));
+                )
+            });
             match ob.handle_tcp_live(conn, live_up, live_down).await {
                 Ok((up, down)) => {
                     guard.add_bytes(up, down);

@@ -267,7 +267,11 @@ impl<S> CountedStream<S> {
         live_up: std::sync::Arc<std::sync::atomic::AtomicI64>,
         live_down: std::sync::Arc<std::sync::atomic::AtomicI64>,
     ) -> Self {
-        Self { inner, live_up, live_down }
+        Self {
+            inner,
+            live_up,
+            live_down,
+        }
     }
 }
 
@@ -282,7 +286,8 @@ impl<S: AsyncRead + Unpin> AsyncRead for CountedStream<S> {
         let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
         let after = buf.filled().len();
         if after > before {
-            self.live_down.fetch_add((after - before) as i64, Ordering::Relaxed);
+            self.live_down
+                .fetch_add((after - before) as i64, Ordering::Relaxed);
         }
         result
     }
