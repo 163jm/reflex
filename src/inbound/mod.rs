@@ -56,6 +56,9 @@ pub struct SniffedStream {
     /// 嗅探阶段 peek 出的字节（未嗅探时为空）
     pub prefix: Bytes,
     pub inner: TcpStream,
+    /// 实时流量计数器（可选）：由 `handle_tcp_live` 注入，在 poll_read/poll_write 里更新
+    pub live_down: Option<std::sync::Arc<std::sync::atomic::AtomicI64>>,
+    pub live_up: Option<std::sync::Arc<std::sync::atomic::AtomicI64>>,
 }
 
 impl SniffedStream {
@@ -64,7 +67,19 @@ impl SniffedStream {
         Self {
             prefix: Bytes::new(),
             inner: stream,
+            live_down: None,
+            live_up: None,
         }
+    }
+
+    /// 注入实时计数器，后续每次 read/write 都会更新对应原子值。
+    pub fn set_live_counters(
+        &mut self,
+        live_up: std::sync::Arc<std::sync::atomic::AtomicI64>,
+        live_down: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    ) {
+        self.live_up = Some(live_up);
+        self.live_down = Some(live_down);
     }
 
     /// 嗅探完成后，将 peek 出的字节作为 prefix 归还。
@@ -98,9 +113,22 @@ impl AsyncRead for SniffedStream {
             let amt = self.prefix.len().min(buf.remaining());
             buf.put_slice(&self.prefix[..amt]);
             self.prefix.advance(amt);
+            if let Some(c) = &self.live_down {
+                c.fetch_add(amt as i64, std::sync::atomic::Ordering::Relaxed);
+            }
             return Poll::Ready(Ok(()));
         }
-        Pin::new(&mut self.inner).poll_read(cx, buf)
+        let before = buf.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &result {
+            let n = buf.filled().len() - before;
+            if n > 0 {
+                if let Some(c) = &self.live_down {
+                    c.fetch_add(n as i64, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+        result
     }
 }
 
@@ -110,7 +138,13 @@ impl AsyncWrite for SniffedStream {
         cx: &mut Context<'_>,
         data: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(cx, data)
+        let result = Pin::new(&mut self.inner).poll_write(cx, data);
+        if let Poll::Ready(Ok(n)) = &result {
+            if let Some(c) = &self.live_up {
+                c.fetch_add(*n as i64, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        result
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

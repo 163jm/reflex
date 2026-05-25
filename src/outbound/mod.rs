@@ -185,21 +185,16 @@ pub trait Outbound: Send + Sync + 'static {
     async fn handle_tcp(&self, conn: InboundTcpStream) -> anyhow::Result<(u64, u64)>;
 
     /// 处理一条 TCP 连接，并实时更新 `live_up` / `live_down` 原子计数器。
-    /// 默认实现调用 `handle_tcp` 并在返回后一次性写入计数，
-    /// 各出站可覆盖此方法以实现逐包实时更新。
+    /// 默认实现将计数器注入 `conn.stream`（SniffedStream），
+    /// 后续所有出站对该流的 read/write 都会实时更新计数器，无需各出站单独覆盖。
     async fn handle_tcp_live(
         &self,
-        conn: InboundTcpStream,
+        mut conn: crate::inbound::InboundTcpStream,
         live_up: std::sync::Arc<std::sync::atomic::AtomicI64>,
         live_down: std::sync::Arc<std::sync::atomic::AtomicI64>,
     ) -> anyhow::Result<(u64, u64)> {
-        use std::sync::atomic::Ordering;
-        let result = self.handle_tcp(conn).await;
-        if let Ok((up, down)) = &result {
-            live_up.store(*up as i64, Ordering::Relaxed);
-            live_down.store(*down as i64, Ordering::Relaxed);
-        }
-        result
+        conn.stream.set_live_counters(live_up, live_down);
+        self.handle_tcp(conn).await
     }
     /// 处理一个 UDP 包
     async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()>;
@@ -254,6 +249,73 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> AsyncReadWrite for T {}
 /// 提升明显（减少系统调用次数）。
 ///
 /// 返回 `(a→b 字节数, b→a 字节数)`。
+// ── CountedStream：包装任意 AsyncRead+AsyncWrite，实时更新计数器 ───────────────
+
+/// 透明包装一个双向流，在每次 read（下载）和 write（上传）时
+/// 实时更新 `live_up` / `live_down` 原子计数器。
+/// 用于在不修改各出站实现的情况下，为所有代理出站提供实时流量统计。
+pub struct CountedStream<S> {
+    inner: S,
+    live_up: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    live_down: std::sync::Arc<std::sync::atomic::AtomicI64>,
+}
+
+impl<S> CountedStream<S> {
+    pub fn new(
+        inner: S,
+        live_up: std::sync::Arc<std::sync::atomic::AtomicI64>,
+        live_down: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    ) -> Self {
+        Self { inner, live_up, live_down }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for CountedStream<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::sync::atomic::Ordering;
+        let before = buf.filled().len();
+        let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        let after = buf.filled().len();
+        if after > before {
+            self.live_down.fetch_add((after - before) as i64, Ordering::Relaxed);
+        }
+        result
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for CountedStream<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        use std::sync::atomic::Ordering;
+        let result = std::pin::Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let std::task::Poll::Ready(Ok(n)) = &result {
+            self.live_up.fetch_add(*n as i64, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
 /// 与 `relay` 相同，但每次转发时实时更新 `live_up` / `live_down` 原子计数器。
 /// 供连接追踪器实时上报上传/下载字节数使用。
 pub async fn relay_tracked<A, B>(

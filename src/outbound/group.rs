@@ -281,6 +281,38 @@ impl Outbound for SelectorOutbound {
         Ok((up, down))
     }
 
+    async fn handle_tcp_live(
+        &self,
+        conn: crate::inbound::InboundTcpStream,
+        live_up: std::sync::Arc<std::sync::atomic::AtomicI64>,
+        live_down: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    ) -> anyhow::Result<(u64, u64)> {
+        let tag = self.current_tag();
+        let outbound = lookup_outbound(&self.registry, &tag)?;
+        debug!(group=%self.config.tag, selected=%tag, target=%conn.target, "selector tcp (tracked)");
+
+        let interrupt_rx = self.interrupt_group.register(true);
+        let target_host = conn.target.host();
+        let target_port = conn.target.port();
+
+        let remote = match tokio::time::timeout(
+            Duration::from_secs(30),
+            outbound.connect_tcp(&target_host, target_port),
+        )
+        .await
+        {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => anyhow::bail!("selector connect_tcp timeout"),
+        };
+
+        let (up, down) =
+            relay_with_interrupt_tracked(conn.stream, remote, interrupt_rx, live_up, live_down)
+                .await;
+        debug!(group=%self.config.tag, up=%up, down=%down, "selector tcp done");
+        Ok((up, down))
+    }
+
     async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         let tag = self.current_tag();
         let outbound = lookup_outbound(&self.registry, &tag)?;
@@ -686,6 +718,23 @@ where
     }
 
     (up_bytes, dn_bytes)
+}
+
+// relay_with_interrupt 的计数版本：同时更新 live_up / live_down 原子计数器
+async fn relay_with_interrupt_tracked<A, R>(
+    local: A,
+    remote: R,
+    interrupt_rx: tokio::sync::oneshot::Receiver<()>,
+    live_up: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    live_down: std::sync::Arc<std::sync::atomic::AtomicI64>,
+) -> (u64, u64)
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    R: AsyncRead + AsyncWrite + Unpin,
+{
+    use crate::outbound::CountedStream;
+    let counted_local = CountedStream::new(local, live_up, live_down);
+    relay_with_interrupt(counted_local, remote, interrupt_rx).await
 }
 
 fn lookup_outbound(registry: &OutboundRegistry, tag: &str) -> anyhow::Result<Arc<dyn Outbound>> {

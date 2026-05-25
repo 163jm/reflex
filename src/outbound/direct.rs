@@ -146,18 +146,12 @@ impl Outbound for DirectOutbound {
 
     async fn handle_tcp_live(
         &self,
-        conn: crate::inbound::InboundTcpStream,
+        mut conn: crate::inbound::InboundTcpStream,
         live_up: std::sync::Arc<std::sync::atomic::AtomicI64>,
         live_down: std::sync::Arc<std::sync::atomic::AtomicI64>,
     ) -> anyhow::Result<(u64, u64)> {
-        let addr = resolve_target_with_dns(&conn.target, self.resolver.as_ref()).await?;
-        debug!(tag=%self.config.tag, target=%conn.target, addr=%addr, "direct tcp (tracked)");
-
-        let remote = self.tcp_connect_addr(addr).await?;
-
-        let (up, down) = crate::outbound::relay_tracked(conn.stream, remote, live_up, live_down).await;
-        debug!(tag=%self.config.tag, up=%up, down=%down, "direct tcp done");
-        Ok((up, down))
+        conn.stream.set_live_counters(live_up, live_down);
+        self.handle_tcp(conn).await
     }
 
     async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
