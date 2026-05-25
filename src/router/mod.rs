@@ -229,7 +229,7 @@ impl Router {
             }
         }
         debug!(inbound=%inbound_tag, target=%target, action=?self.default, "route default");
-        (&self.default, "MATCH", "")
+        (&self.default, "final", "")
     }
 
     /// 按预计算索引遍历（跳过特定 action 规则，零分支判断）
@@ -250,7 +250,7 @@ impl Router {
             }
         }
         debug!(inbound=%inbound_tag, target=%target, action=?self.default, label, "route default");
-        (&self.default, "MATCH", "")
+        (&self.default, "final", "")
     }
 }
 
