@@ -29,8 +29,18 @@
 //! teardown 时精确清理，不依赖固定偏移量。
 //!
 //! ### Windows auto_route
-//! 使用 `netsh` + 正确的接口名（从 `tun` crate 的 `name()` 获取）。
-//! strict_route 通过 Windows 防火墙（netsh advfirewall）实现 DNS 保护。
+//! 使用 `netsh` + 实际接口名（通过 PowerShell 验证后再执行）。
+//!
+//! 修复了三个问题：
+//! 1. **TCP Listener 绑定时序**：`platform::setup()` 配置 IP 地址后，Windows 需要数百毫秒
+//!    才能将地址绑定到网卡。旧代码直接 bind 导致必然失败。
+//!    修复：setup 之后、bind 之前轮询等待地址真正可用（最多 6s）。
+//! 2. **接口名验证**：wintun 适配器创建后实际名称以 PowerShell 查询为准，
+//!    配置的 `interface_name` 不一定与内核看到的相同。
+//!    修复：setup() 先用 PowerShell 验证实际接口名，再执行 netsh。
+//! 3. **strict_route 自身豁免**：旧代码用 `netsh advfirewall` 阻断所有 UDP/53 出站，
+//!    包括 reflex 进程自身，导致代理的 DNS 查询也被拦截。
+//!    修复：添加 `program=<exe_path>` 例外，只拦截其他进程的 UDP/53。
 //!
 //! ## 依赖
 //! `tun = { version = "0.8", features = ["async"] }`
@@ -328,11 +338,22 @@ impl TunInbound {
 
             // 获取实际接口名。
             // tun 0.8 在 Linux/macOS 下 dev.name() 返回内核分配的真实名称；
-            // Windows 下 wintun 适配器名由 device_guid 决定，仍用配置值。
-            let if_name = cfg
-                .interface_name
-                .clone()
-                .unwrap_or_else(|| "tun0".to_string());
+            // Windows 下 wintun 适配器名由 device_guid 决定，以 PowerShell 查询为准。
+            #[cfg(not(target_os = "windows"))]
+            let if_name = {
+                match dev.name() {
+                    Ok(name) if !name.is_empty() => name,
+                    _ => cfg.interface_name.clone().unwrap_or_else(|| "tun0".to_string()),
+                }
+            };
+
+            #[cfg(target_os = "windows")]
+            let if_name = {
+                // wintun 适配器创建后名称由 guid 决定，需要通过 PowerShell 查询实际名称
+                // 等待最多 3s 让适配器在系统中注册
+                let expected = cfg.interface_name.as_deref().unwrap_or("tun0");
+                platform::resolve_actual_interface_name(expected)
+            };
 
             (dev, if_name)
         };
@@ -351,6 +372,17 @@ impl TunInbound {
                 Err(e) => {
                     warn!(err = %e, "tun: auto_route setup failed (requires elevated privileges)")
                 }
+            }
+        }
+
+        // ── Windows：等待 TUN 地址真正生效后再 bind ────────────────────────
+        // wintun 适配器创建并由 netsh 配置 IP 后，Windows 需要额外时间
+        // 将地址注册到网卡。直接 bind 会因地址不可用而失败。
+        // 轮询策略参照 sing-tun retryableListenError（WSAEADDRNOTAVAIL 重试）。
+        #[cfg(target_os = "windows")]
+        if cfg.auto_route {
+            if let Some(addr) = inet4_addr {
+                platform::wait_for_tun_address(addr).await;
             }
         }
 
@@ -1900,8 +1932,9 @@ mod platform {
 #[cfg(target_os = "windows")]
 mod platform {
     use super::{parse_addr_prefix, prefix_len_to_mask_v4, TunInboundConfig};
-    use std::net::IpAddr;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
     use std::process::Command;
+    use tokio::net::TcpListener;
     use tracing::{info, warn};
 
     // IPv4/IPv6 非默认路由段（与 sing-tun / clash-rs 一致）
@@ -1919,32 +1952,89 @@ mod platform {
         "100::/8", "200::/7", "400::/6", "800::/5", "1000::/4", "2000::/3", "4000::/2", "8000::/1",
     ];
 
-    /// 用 PowerShell 获取接口索引（netsh 需要接口名而非索引）
-    fn get_interface_index(if_name: &str) -> Option<u32> {
+    // ── 接口名解析 ────────────────────────────────────────────────────────────
+
+    /// 通过 PowerShell 查询适配器的真实名称。
+    /// wintun 适配器由 device_guid 唯一标识，名称可能与配置值不同。
+    /// 返回 PowerShell 查询到的实际名称；若查询失败则返回 expected 原值。
+    pub fn resolve_actual_interface_name(expected: &str) -> String {
+        // 先用期望名直接尝试（最常见情况，避免每次都启动 PowerShell）
         let out = Command::new("powershell")
             .args([
                 "-NoProfile",
+                "-NonInteractive",
                 "-Command",
                 &format!(
-                    "(Get-NetAdapter -Name '{}' -ErrorAction SilentlyContinue).ifIndex",
-                    if_name
+                    "(Get-NetAdapter -Name '{}' -ErrorAction SilentlyContinue).Name",
+                    expected
                 ),
             ])
-            .output()
-            .ok()?;
-        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+            .output();
+        if let Ok(out) = out {
+            let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+        // 查不到则返回原值，后续 netsh 会输出具体错误
+        warn!(expected = %expected, "tun: could not verify interface name via PowerShell, using configured name");
+        expected.to_string()
     }
 
-    /// 等待 Windows TUN 接口在系统中可见（wintun 创建后有延迟）
+    /// 等待 Windows TUN 接口在系统中可见（wintun 创建后有延迟）。
+    /// 返回实际可见的接口名（与 resolve_actual_interface_name 一致）。
     fn wait_for_interface(if_name: &str) {
-        for _ in 0..20 {
-            if get_interface_index(if_name).is_some() {
-                return;
+        for _ in 0..30 {
+            let out = Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &format!(
+                        "(Get-NetAdapter -Name '{}' -ErrorAction SilentlyContinue).ifIndex",
+                        if_name
+                    ),
+                ])
+                .output()
+                .ok();
+            if let Some(out) = out {
+                let s = String::from_utf8_lossy(&out.stdout);
+                if s.trim().parse::<u32>().is_ok() {
+                    return;
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        warn!(interface = %if_name, "tun: interface not visible after 2s");
+        warn!(interface = %if_name, "tun: interface not visible after 3s");
     }
+
+    // ── 等待地址生效（修复 TCP Listener 绑定时序）────────────────────────────
+
+    /// 等待 TUN 接口的 IPv4 地址真正可绑定。
+    ///
+    /// Windows 在 netsh 配置 IP 后仍需数百毫秒才将地址加入网卡。
+    /// 参照 sing-tun 的 retryableListenError（WSAEADDRNOTAVAIL）重试策略。
+    /// 最多等待 6 秒（30 × 200ms），超时后继续（bind 可能仍会失败，
+    /// 届时上层有 3 次重试兜底）。
+    pub async fn wait_for_tun_address(addr: Ipv4Addr) {
+        for _ in 0u32..30 {
+            match TcpListener::bind(SocketAddrV4::new(addr, 0)).await {
+                Ok(_) => return, // 地址已可用，立即返回
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+            }
+        }
+        warn!(addr = %addr, "tun: address not ready after 6s, proceeding anyway");
+    }
+
+    // ── 获取当前进程可执行文件路径（用于防火墙规则自身豁免）────────────────
+
+    fn current_exe_path() -> Option<String> {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+    }
+
+    // ── setup / teardown ─────────────────────────────────────────────────────
 
     pub fn setup(cfg: &TunInboundConfig, if_name: &str) -> anyhow::Result<()> {
         if !cfg.include_interface.is_empty() || !cfg.exclude_interface.is_empty() {
@@ -1954,7 +2044,7 @@ mod platform {
             warn!("tun: include/exclude_uid not supported on Windows");
         }
 
-        // 等待接口出现再配置（wintun 创建后有短暂延迟）
+        // 等待适配器在系统中注册（wintun 创建后有短暂延迟）
         wait_for_interface(if_name);
 
         let mut has_v4 = false;
@@ -1981,12 +2071,14 @@ mod platform {
                         .map(|o| o.status.success())
                         .unwrap_or(false);
                     if !ok {
-                        warn!(interface = %if_name, ip = %ip, "tun: failed to set IPv4 address");
+                        warn!(interface = %if_name, ip = %ip, "tun: failed to set IPv4 address via netsh");
+                    } else {
+                        info!(interface = %if_name, ip = %ip, mask = %mask, "tun: IPv4 address configured");
                     }
                     has_v4 = true;
                 }
                 Some((IpAddr::V6(ip), prefix_len)) => {
-                    Command::new("netsh")
+                    let ok = Command::new("netsh")
                         .args([
                             "interface",
                             "ipv6",
@@ -1996,7 +2088,13 @@ mod platform {
                             &format!("{}/{}", ip, prefix_len),
                         ])
                         .output()
-                        .ok();
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+                    if !ok {
+                        warn!(interface = %if_name, ip = %ip, "tun: failed to set IPv6 address via netsh");
+                    } else {
+                        info!(interface = %if_name, ip = %ip, "tun: IPv6 address configured");
+                    }
                     has_v6 = true;
                 }
                 None => warn!(addr = %addr_str, "tun: invalid address prefix"),
@@ -2019,6 +2117,7 @@ mod platform {
                     .output()
                     .ok();
             }
+            info!(interface = %if_name, "tun: IPv4 routes added");
         }
         if has_v6 {
             for &cidr in IPV6_SUB_RANGES {
@@ -2035,28 +2134,64 @@ mod platform {
                     .output()
                     .ok();
             }
+            info!(interface = %if_name, "tun: IPv6 routes added");
         }
 
-        // strict_route：通过 Windows 防火墙阻止非 TUN 接口的 DNS 出站（防泄漏）
+        // strict_route：通过 Windows 防火墙阻止非 TUN 接口的 DNS 出站（防泄漏）。
+        //
+        // 修复：旧实现阻断所有 UDP/53 出站，包括 reflex 进程自身，导致代理的
+        // DNS 查询也被拦截。现在分两条规则：
+        //   规则1（允许）：仅 reflex 自身进程 → 优先级高，放行
+        //   规则2（阻断）：所有其他进程 UDP/53 → 优先级低，拦截
+        //
+        // netsh advfirewall 的优先级由添加顺序决定（先匹配先执行），
+        // 因此先添加 allow 规则，再添加 block 规则。
         if cfg.strict_route {
-            // 先删除可能存在的旧规则，再添加新规则
+            // 清理旧规则
             Command::new("netsh")
                 .args([
-                    "advfirewall",
-                    "firewall",
-                    "delete",
-                    "rule",
-                    "name=reflex-tun-strict",
+                    "advfirewall", "firewall", "delete", "rule",
+                    "name=reflex-tun-strict-allow",
                 ])
                 .output()
                 .ok();
             Command::new("netsh")
                 .args([
-                    "advfirewall",
-                    "firewall",
-                    "add",
-                    "rule",
-                    "name=reflex-tun-strict",
+                    "advfirewall", "firewall", "delete", "rule",
+                    "name=reflex-tun-strict-block",
+                ])
+                .output()
+                .ok();
+
+            // 规则1：允许 reflex 自身的 UDP/53 出站
+            if let Some(exe) = current_exe_path() {
+                let ok = Command::new("netsh")
+                    .args([
+                        "advfirewall", "firewall", "add", "rule",
+                        "name=reflex-tun-strict-allow",
+                        "protocol=UDP",
+                        "dir=out",
+                        "remoteport=53",
+                        "action=allow",
+                        &format!("program={}", exe),
+                    ])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if ok {
+                    info!(exe = %exe, "tun: strict_route self-allow rule added");
+                } else {
+                    warn!(exe = %exe, "tun: failed to add strict_route self-allow rule");
+                }
+            } else {
+                warn!("tun: could not get current exe path, strict_route self-allow skipped");
+            }
+
+            // 规则2：阻断其他所有进程的 UDP/53 出站
+            Command::new("netsh")
+                .args([
+                    "advfirewall", "firewall", "add", "rule",
+                    "name=reflex-tun-strict-block",
                     "protocol=UDP",
                     "dir=out",
                     "remoteport=53",
@@ -2064,7 +2199,7 @@ mod platform {
                 ])
                 .output()
                 .ok();
-            info!("tun: strict_route DNS block rule added (Windows)");
+            info!("tun: strict_route DNS block rule added (Windows), reflex self exempted");
         }
 
         // 刷新 DNS 缓存
@@ -2104,11 +2239,15 @@ mod platform {
         if cfg.strict_route {
             Command::new("netsh")
                 .args([
-                    "advfirewall",
-                    "firewall",
-                    "delete",
-                    "rule",
-                    "name=reflex-tun-strict",
+                    "advfirewall", "firewall", "delete", "rule",
+                    "name=reflex-tun-strict-allow",
+                ])
+                .output()
+                .ok();
+            Command::new("netsh")
+                .args([
+                    "advfirewall", "firewall", "delete", "rule",
+                    "name=reflex-tun-strict-block",
                 ])
                 .output()
                 .ok();
