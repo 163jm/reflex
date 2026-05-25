@@ -95,7 +95,11 @@ pub fn new_marked_quic_endpoint(
 ) -> anyhow::Result<quinn::Endpoint> {
     use socket2::{Domain, Protocol, Socket, Type};
 
-    let domain = if bind.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+    let domain = if bind.is_ipv6() {
+        Domain::IPV6
+    } else {
+        Domain::IPV4
+    };
     let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
     sock.set_reuse_address(true)?;
 

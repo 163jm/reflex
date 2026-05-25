@@ -21,7 +21,10 @@ use tracing::{debug, warn};
 use crate::{
     config::outbound::{SocksOutboundConfig, SocksVersion},
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{apply_mark_to_tcp, apply_mark_to_udp, relay, resolve_target, set_tcp_opts, Outbound, OutboundStatus},
+    outbound::{
+        apply_mark_to_tcp, apply_mark_to_udp, relay, resolve_target, set_tcp_opts, Outbound,
+        OutboundStatus,
+    },
 };
 
 // ── SOCKS 常量 ────────────────────────────────────────────────────────────────
@@ -63,7 +66,11 @@ pub struct SocksOutbound {
 impl SocksOutbound {
     pub fn new(config: SocksOutboundConfig) -> anyhow::Result<Self> {
         let version = config.parsed_version()?;
-        Ok(Self { config, version, routing_mark: 0 })
+        Ok(Self {
+            config,
+            version,
+            routing_mark: 0,
+        })
     }
 
     pub fn with_mark(mut self, mark: u32) -> Self {
@@ -80,12 +87,7 @@ impl SocksOutbound {
         ))
         .await?
         .next()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "socks: DNS lookup failed for {}",
-                self.config.server
-            )
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("socks: DNS lookup failed for {}", self.config.server))?;
         let stream = TcpStream::connect(addr).await?;
         set_tcp_opts(&stream)?;
         apply_mark_to_tcp(&stream, self.routing_mark)?;
@@ -117,7 +119,10 @@ impl SocksOutbound {
 
         let mut resp = [0u8; 2];
         stream.read_exact(&mut resp).await?;
-        anyhow::ensure!(resp[0] == SOCKS5_VERSION, "socks5: unexpected server version");
+        anyhow::ensure!(
+            resp[0] == SOCKS5_VERSION,
+            "socks5: unexpected server version"
+        );
         anyhow::ensure!(
             resp[1] != SOCKS5_NO_ACCEPTABLE,
             "socks5: server rejected all auth methods"
@@ -127,7 +132,10 @@ impl SocksOutbound {
         if resp[1] == SOCKS5_USER_PASS_AUTH {
             let user = self.config.username.as_deref().unwrap_or("");
             let pass = self.config.password.as_deref().unwrap_or("");
-            anyhow::ensure!(user.len() <= 255 && pass.len() <= 255, "socks5: username/password too long");
+            anyhow::ensure!(
+                user.len() <= 255 && pass.len() <= 255,
+                "socks5: username/password too long"
+            );
 
             let mut auth = Vec::with_capacity(3 + user.len() + pass.len());
             auth.push(SOCKS5_AUTH_VERSION);
@@ -298,10 +306,7 @@ impl SocksOutbound {
     /// 2. 绑定本地 UDP socket，向 relay 地址发送封装好的数据报
     /// 3. 读取响应，去掉 SOCKS5 UDP 头后通过 reply_tx 返回
     /// 4. TCP 控制连接保持到函数返回（drop 即可，代理会同时关闭 UDP relay）
-    async fn socks5_udp(
-        &self,
-        packet: InboundUdpPacket,
-    ) -> anyhow::Result<()> {
+    async fn socks5_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         // ── 1. UDP ASSOCIATE ───────────────────────────────────────────────────
         // 目标地址填 0.0.0.0:0（表示"我要发任意目标"，RFC 1928 §4）
         let placeholder = Target::Socket("0.0.0.0:0".parse()?);
@@ -358,12 +363,10 @@ impl SocksOutbound {
         udp.send_to(&dgram, relay_addr).await?;
 
         let mut buf = vec![0u8; 65535];
-        let (n, _from) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            udp.recv_from(&mut buf),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("socks5 udp: response timeout"))??;
+        let (n, _from) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), udp.recv_from(&mut buf))
+                .await
+                .map_err(|_| anyhow::anyhow!("socks5 udp: response timeout"))??;
 
         // ── 4. 去掉 SOCKS5 UDP 头，取出 payload ──────────────────────────────
         let payload = socks5_udp_strip_header(&buf[..n])?;
@@ -420,8 +423,12 @@ impl SocksOutbound {
             SOCKS5_CMD_UDP_ASSOCIATE,
             0x00,
             SOCKS5_ATYP_IPV4,
-            0, 0, 0, 0, // 0.0.0.0
-            0, 0,       // port 0
+            0,
+            0,
+            0,
+            0, // 0.0.0.0
+            0,
+            0, // port 0
         ];
         stream.write_all(&req).await?;
 
@@ -590,10 +597,22 @@ mod tests {
 
     #[test]
     fn version_parsing() {
-        assert_eq!(make_config(None).parsed_version().unwrap(), SocksVersion::V5);
-        assert_eq!(make_config(Some("5")).parsed_version().unwrap(), SocksVersion::V5);
-        assert_eq!(make_config(Some("4a")).parsed_version().unwrap(), SocksVersion::V4a);
-        assert_eq!(make_config(Some("4")).parsed_version().unwrap(), SocksVersion::V4);
+        assert_eq!(
+            make_config(None).parsed_version().unwrap(),
+            SocksVersion::V5
+        );
+        assert_eq!(
+            make_config(Some("5")).parsed_version().unwrap(),
+            SocksVersion::V5
+        );
+        assert_eq!(
+            make_config(Some("4a")).parsed_version().unwrap(),
+            SocksVersion::V4a
+        );
+        assert_eq!(
+            make_config(Some("4")).parsed_version().unwrap(),
+            SocksVersion::V4
+        );
         assert!(make_config(Some("6")).parsed_version().is_err());
     }
 
