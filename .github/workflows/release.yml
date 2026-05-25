@@ -92,6 +92,10 @@ jobs:
             os:       ubuntu-latest
             artifact: reflex-linux-x86_64
             cross:    true
+          - target:   x86_64-pc-windows-msvc
+            os:       windows-latest
+            artifact: reflex-windows-x86_64
+            cross:    false
 
     steps:
       - uses: actions/checkout@v4
@@ -114,7 +118,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-
 
-      - name: Install musl-tools (x86_64)
+      - name: Install musl-tools (x86_64 Linux)
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get install -y musl-tools
 
@@ -124,9 +128,8 @@ jobs:
         with:
           tool: cross
 
-      # ── 只编译 reflex（内置 rsc 功能） ─────────────────────────────────
-      - name: Build reflex (x86_64, native)
-        if: matrix.cross == false
+      - name: Build reflex (Linux x86_64, native musl)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           cargo build \
             --release \
@@ -137,8 +140,8 @@ jobs:
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
 
-      - name: Build reflex (aarch64, cross)
-        if: matrix.cross == true
+      - name: Build reflex (Linux aarch64, cross)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
         run: |
           cross build \
             --release \
@@ -147,31 +150,60 @@ jobs:
             --bin reflex \
             --features outbound-net
 
-      # ── 收集产物 ────────────────────────────────────────────────────────
-      - name: Collect binary
+      - name: Build reflex (Windows)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
         run: |
-          mkdir -p dist
-          BIN_DIR="target/${{ matrix.target }}/release"
+          cargo build \
+            --release \
+            --locked \
+            --target ${{ matrix.target }} \
+            --bin reflex \
+            --no-default-features \
+            --features outbound-net
 
-          cp "$BIN_DIR/reflex" "dist/reflex"
-
-          cd dist
-          tar -czf "../${{ matrix.artifact }}.tar.gz" reflex
-          cd ..
-
-          sha256sum "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.tar.gz.sha256"
-
+      # ── 收集产物（Linux：直接二进制；Windows：.exe） ────────────────────
+      - name: Collect binary (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          BIN="target/${{ matrix.target }}/release/reflex"
+          cp "$BIN" "${{ matrix.artifact }}"
+          sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
           echo "=== Build output ==="
-          ls -lh "${{ matrix.artifact }}.tar.gz"
-          cat    "${{ matrix.artifact }}.tar.gz.sha256"
+          ls -lh "${{ matrix.artifact }}"
+          cat    "${{ matrix.artifact }}.sha256"
 
-      - name: Upload artifact
+      - name: Collect binary (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/reflex.exe"
+          cp "$BIN" "${{ matrix.artifact }}.exe"
+          certutil -hashfile "${{ matrix.artifact }}.exe" SHA256 \
+            | grep -v "hash" | grep -v "CertUtil" \
+            > "${{ matrix.artifact }}.exe.sha256"
+          echo "=== Build output ==="
+          ls -lh "${{ matrix.artifact }}.exe"
+          cat    "${{ matrix.artifact }}.exe.sha256"
+
+      - name: Upload artifact (Linux)
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: |
-            ${{ matrix.artifact }}.tar.gz
-            ${{ matrix.artifact }}.tar.gz.sha256
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.sha256
+          retention-days: 1
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.exe
+            ${{ matrix.artifact }}.exe.sha256
           retention-days: 1
 
   # ── 4. 创建 GitHub Release ───────────────────────────────────────────────
@@ -202,11 +234,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 列出所有 pre-release，逐个删除 release 和对应 tag
-          gh release list --limit 100 --json tagName,isPrerelease             --jq '.[] | select(.isPrerelease) | .tagName'           | while read -r tag; do
-              echo "Deleting pre-release and tag: $tag"
-              gh release delete "$tag" --yes --cleanup-tag || true
-            done
+          gh release list --limit 100 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease) | .tagName' \
+            | while read -r tag; do
+                echo "Deleting pre-release and tag: $tag"
+                gh release delete "$tag" --yes --cleanup-tag || true
+              done
 
       - name: Create and push tag
         run: |
@@ -225,7 +258,10 @@ jobs:
           prerelease: ${{ github.event.inputs.prerelease }}
           draft:      false
           files: |
-            artifacts/**/*.tar.gz
+            artifacts/reflex-linux-aarch64/reflex-linux-aarch64
+            artifacts/reflex-linux-x86_64/reflex-linux-x86_64
+            artifacts/reflex-windows-x86_64/reflex-windows-x86_64.exe
+            checksums.txt
 
       - name: Release URL
         run: |
