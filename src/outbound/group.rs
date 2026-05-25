@@ -278,10 +278,10 @@ impl Outbound for SelectorOutbound {
         // 双向转发，同时监听中断信号
         let (up, down) = relay_with_interrupt(conn.stream, remote, interrupt_rx).await;
         debug!(group=%self.config.tag, up=%up, down=%down, "selector tcp done");
-        Ok((up, down))
+        Ok(())
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         let tag = self.current_tag();
         let outbound = lookup_outbound(&self.registry, &tag)?;
         debug!(group=%self.config.tag, selected=%tag, target=%packet.target, "selector udp");
@@ -620,7 +620,7 @@ impl Outbound for UrlTestOutbound {
         outbound.handle_tcp(conn).await
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         let (tag, outbound) = self.selected_outbound().await?;
         debug!(group=%self.config.tag, selected=%tag, target=%packet.target, "url-test udp");
         outbound.handle_udp(packet).await

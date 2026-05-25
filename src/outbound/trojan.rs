@@ -265,7 +265,7 @@ impl Outbound for TrojanOutbound {
         Ok(relay(conn.stream, io).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         debug!(
@@ -337,7 +337,7 @@ impl Outbound for TrojanOutbound {
             let _ = reply_tx.send((bytes::Bytes::from(data), src)).await;
         }
 
-        Ok((up, down))
+        Ok(())
     }
 }
 

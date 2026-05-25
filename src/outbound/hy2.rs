@@ -577,7 +577,7 @@ impl Outbound for Hy2Outbound {
         Ok(relay(conn.stream, hy2_io).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         let (qconn, auth) = self.get_or_create_connection().await?;
 
         if !auth.udp_enabled {
@@ -606,7 +606,7 @@ impl Outbound for Hy2Outbound {
                     Ok(Some(payload)) => {
                         let down = payload.len() as u64;
                         let _ = packet.session.reply_tx.send((payload, packet.src)).await;
-                        return Ok((up, down));
+                        return Ok(());
                     }
                     Ok(None) => {} // 分片不完整，已超时丢弃
                     Err(e) => warn!(err = %e, "hy2 udp reassemble error"),
@@ -615,7 +615,7 @@ impl Outbound for Hy2Outbound {
             Ok(Err(e)) => warn!(err = %e, "hy2 udp recv error"),
             Err(_) => {} // timeout
         }
-        Ok((up, 0))
+        Ok(())
     }
 }
 

@@ -342,7 +342,7 @@ impl Outbound for VlessOutbound {
         Ok(relay(conn.stream, io).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         use crate::outbound::proto::{
             vless_build_udp_request, vless_decode_udp_frame_len, vless_encode_udp_frame,
         };
@@ -387,7 +387,7 @@ impl Outbound for VlessOutbound {
             down += data_len as u64;
             let _ = reply_tx.send((bytes::Bytes::from(data), src)).await;
         }
-        Ok((up, down))
+        Ok(())
     }
 }
 

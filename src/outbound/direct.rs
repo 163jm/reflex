@@ -141,10 +141,10 @@ impl Outbound for DirectOutbound {
 
         let (up, down) = relay(conn.stream, remote).await;
         debug!(tag=%self.config.tag, up=%up, down=%down, "direct tcp done");
-        Ok((up, down))
+        Ok(())
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         let dst = resolve_target_with_dns(&packet.target, self.resolver.as_ref()).await?;
         debug!(tag=%self.config.tag, target=%packet.target, dst=%dst, "direct udp");
 
@@ -164,7 +164,7 @@ impl Outbound for DirectOutbound {
                 if from != dst {
                     // 独立 socket 下几乎不会发生，但保留防御性检查
                     debug!(expected=%dst, got=%from, "direct udp: unexpected source, dropping");
-                    return Ok((up, 0));
+                    return Ok(());
                 }
                 let down = n as u64;
                 let _ = packet
@@ -172,14 +172,14 @@ impl Outbound for DirectOutbound {
                     .reply_tx
                     .send((bytes::Bytes::copy_from_slice(&buf[..n]), packet.src))
                     .await;
-                Ok((up, down))
+                Ok(())
             }
             Ok(Err(e)) => Err(e.into()),
             Err(_) => {
                 // UDP 无响应超时，记录 debug 日志便于排查（不作为错误上报，
                 // 上层如需重试由调用方决策）
                 debug!(tag=%self.config.tag, dst=%dst, "direct udp: response timeout (5s)");
-                Ok((up, 0))
+                Ok(())
             }
         }
     }
@@ -216,11 +216,11 @@ impl Outbound for BlockOutbound {
     async fn handle_tcp(&self, conn: InboundTcpStream) -> anyhow::Result<(u64, u64)> {
         debug!(tag=%self.config.tag, target=%conn.target, "block tcp");
         drop(conn.stream); // RST/FIN
-        Ok((0, 0))
+        Ok(())
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         debug!(tag=%self.config.tag, target=%packet.target, "block udp");
-        Ok((0, 0))
+        Ok(())
     }
 }

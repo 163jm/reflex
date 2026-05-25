@@ -798,7 +798,7 @@ impl Outbound for ShadowsocksOutbound {
         Ok(relay_ss(conn.stream, ss_rd, ss_wr).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         use tokio::net::UdpSocket;
 
         debug!(tag = %self.config.tag, target = %packet.target, "shadowsocks udp relay");
@@ -851,6 +851,6 @@ impl Outbound for ShadowsocksOutbound {
                 _ => break,
             }
         }
-        Ok((up, down))
+        Ok(())
     }
 }

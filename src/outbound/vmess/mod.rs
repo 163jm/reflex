@@ -241,7 +241,7 @@ impl Outbound for VmessOutbound {
         Ok(relay(conn.stream, vmess).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         let raw = self.connect_raw().await?;
         let mut vmess = self.handshake(raw, &packet.target, CMD_UDP).await?;
         debug!(tag = %self.config.tag, target = %packet.target, "vmess udp relay");
@@ -269,7 +269,7 @@ impl Outbound for VmessOutbound {
                 Ok(Err(_)) => break,
             }
         }
-        Ok((up, down))
+        Ok(())
     }
 }
 

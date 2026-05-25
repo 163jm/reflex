@@ -378,7 +378,7 @@ impl SocksOutbound {
             .send((bytes::Bytes::copy_from_slice(payload), packet.src))
             .await;
 
-        Ok((up, down))
+        Ok(())
     }
 
     /// 发起 UDP ASSOCIATE 并返回代理分配的 UDP relay 地址。
@@ -523,10 +523,10 @@ impl Outbound for SocksOutbound {
         let remote = self.connect_tunnel(&conn.target).await?;
         let (up, down) = relay(conn.stream, remote).await;
         debug!(tag = %self.config.tag, up, down, "socks tcp done");
-        Ok((up, down))
+        Ok(())
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         match self.version {
             SocksVersion::V5 => {
                 debug!(
@@ -542,7 +542,7 @@ impl Outbound for SocksOutbound {
                     target = %packet.target,
                     "socks4/4a does not support UDP, dropping packet"
                 );
-                Ok((0, 0))
+                Ok(())
             }
         }
     }

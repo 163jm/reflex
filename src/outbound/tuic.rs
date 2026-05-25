@@ -237,7 +237,7 @@ impl Outbound for TuicOutbound {
         Ok(relay(conn.stream, proxy_stream).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
+    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         let conn = self.get_conn().await?;
         let session_id = self.udp_session.fetch_add(1, Ordering::Relaxed);
 
@@ -281,7 +281,7 @@ impl Outbound for TuicOutbound {
                 Err(_) => break, // timeout
             }
         }
-        Ok((up, down))
+        Ok(())
     }
 }
 

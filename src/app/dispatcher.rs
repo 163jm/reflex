@@ -489,7 +489,7 @@ async fn run_udp_session(
     let _guard = UdpGuard::new(stats.tag(&outbound_tag));
     let host = target.to_string();
     let dest_port = target.port();
-    let conn_guard = conn_tracker.register(
+    let conn_guard = Arc::new(conn_tracker.register(
         ConnInfo {
             network: "udp",
             host: &host,
@@ -499,33 +499,43 @@ async fn run_udp_session(
             outbound: &outbound_tag,
         },
         &rule_info,
-    );
+    ));
+
+    // 用中间 channel 拦截出站回包，统计下行字节后再转发给入站
+    let (intercept_tx, mut intercept_rx) = mpsc::channel::<(bytes::Bytes, SocketAddr)>(64);
+
+    // 启动转发任务：从中间 channel 收回包 → 统计下行字节 → 转发给入站 reply_tx
+    let conn_guard_down = conn_guard.clone();
+    let reply_tx_fwd = reply_tx.clone();
+    tokio::spawn(async move {
+        while let Some((data, addr)) = intercept_rx.recv().await {
+            conn_guard_down.add_bytes(0, data.len() as i64);
+            let _ = reply_tx_fwd.send((data, addr)).await;
+        }
+    });
 
     // 从 data_rx 持续收包，每包构造一个 InboundUdpPacket 交给出站
-    // 出站的回包通过 reply_tx 发回入站
+    // 出站的回包通过 intercept_tx → intercept_rx → reply_tx 链路转发
     loop {
         let data = tokio::time::timeout(timeout, data_rx.recv()).await;
         match data {
             Ok(Some(payload)) => {
+                let up = payload.len() as i64;
                 let packet = InboundUdpPacket {
                     data: payload,
                     src,
                     target: target.clone(),
                     inbound_tag: inbound_tag.clone(),
                     session: UdpSession {
-                        reply_tx: reply_tx.clone(),
+                        reply_tx: intercept_tx.clone(),
                     },
                     sniffed_protocol: None,
                     sniffed_domain: None,
                 };
-                match ob.handle_udp(packet).await {
-                    Ok((up, down)) => {
-                        conn_guard.add_bytes(up as i64, down as i64);
-                    }
-                    Err(e) => {
-                        debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
-                        // 出站报错不立即退出，继续等待下一个包（避免因单包错误中断整个会话）
-                    }
+                conn_guard.add_bytes(up, 0);
+                if let Err(e) = ob.handle_udp(packet).await {
+                    debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
+                    // 出站报错不立即退出，继续等待下一个包（避免因单包错误中断整个会话）
                 }
             }
             Ok(None) => {
@@ -648,16 +658,9 @@ async fn dispatch_udp(
                 },
                 &rule_info,
             );
-            match ob.handle_udp(packet).await {
-                Ok((up, down)) => {
-                    conn_guard.add_bytes(up as i64, down as i64);
-                    Ok(())
-                }
-                Err(e) => {
-                    drop(conn_guard);
-                    Err(e)
-                }
-            }
+            let result = ob.handle_udp(packet).await;
+            drop(conn_guard);
+            result
         }
         RouteAction::Sniff { .. } => {
             debug!("Sniff action reached dispatch_udp unexpectedly, dropping packet");
