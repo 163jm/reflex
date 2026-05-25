@@ -168,7 +168,10 @@ impl DnsUpstream {
             },
 
             DnsProtocol::Udp => UpstreamKind::Udp {
-                addr: parse_addr(&cfg.address, 53)?,
+                addr: parse_addr(
+                    cfg.address.strip_prefix("udp://").unwrap_or(&cfg.address),
+                    53,
+                )?,
             },
 
             DnsProtocol::Dot => {
