@@ -732,6 +732,13 @@ mod tests {
             idx_no_sniff_resolve,
             default: RouteAction::Outbound(default.into()),
             rulesets: HashMap::new(),
+            ruleset_meta: HashMap::new(),
+            route_config: crate::config::route::RouteConfig {
+                rules: vec![],
+                r#final: String::new(),
+                rule_set: vec![],
+                resolve_dns: false,
+            },
         }
     }
 
