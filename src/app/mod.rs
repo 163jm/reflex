@@ -401,13 +401,22 @@ impl App {
         Ok(Self { tasks, stats })
     }
 
-    pub async fn wait(mut self) {
+    pub async fn wait(mut self) -> anyhow::Result<()> {
         while let Some(res) = self.tasks.join_next().await {
             match res {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => error!(err=%e, "task exited with error"),
-                Err(e) => error!(err=%e, "task panicked"),
+                Ok(Err(e)) => {
+                    error!(err=%e, "task exited with error, shutting down");
+                    self.tasks.abort_all();
+                    return Err(e);
+                }
+                Err(e) => {
+                    error!(err=%e, "task panicked, shutting down");
+                    self.tasks.abort_all();
+                    return Err(anyhow::anyhow!("task panicked: {}", e));
+                }
             }
         }
+        Ok(())
     }
 }
