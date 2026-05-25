@@ -68,6 +68,8 @@ use tokio::{
     sync::{mpsc, Mutex, RwLock},
 };
 use tracing::{debug, error, info, warn};
+#[cfg(not(target_os = "windows"))]
+use tun::AbstractDevice as _;
 
 use crate::{
     config::inbound::TunInboundConfig,
