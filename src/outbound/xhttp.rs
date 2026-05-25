@@ -32,7 +32,13 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     sync::{
-        atomic::{AtomicI64, Ordering},
+        atomic::{
+            #[cfg(target_pointer_width = "64")]
+            AtomicI64,
+            #[cfg(not(target_pointer_width = "64"))]
+            AtomicI32,
+            Ordering,
+        },
         Arc,
     },
     task::{Context, Poll},
@@ -59,6 +65,16 @@ use uuid::Uuid;
 
 use crate::config::outbound::{TlsConfig, XhttpTransportConfig};
 use crate::outbound::{apply_mark_to_tcp, set_tcp_opts};
+
+// ── 平台兼容：32 位架构无 AtomicI64 ──────────────────────────────────────────
+#[cfg(target_pointer_width = "64")]
+type SeqAtomic = std::sync::atomic::AtomicI64;
+#[cfg(target_pointer_width = "64")]
+type SeqInt = i64;
+#[cfg(not(target_pointer_width = "64"))]
+type SeqAtomic = std::sync::atomic::AtomicI32;
+#[cfg(not(target_pointer_width = "64"))]
+type SeqInt = i32;
 
 // ── 公共接口 ─────────────────────────────────────────────────────────────────
 
@@ -109,7 +125,7 @@ pub async fn connect(
         base_url,
         session_id,
         headers,
-        seq: AtomicI64::new(0),
+        seq: SeqAtomic::new(0),
         max_post_bytes: cfg.sc_max_each_post_bytes.unwrap_or(1_000_000) as usize,
         min_post_interval_ms: cfg.sc_min_posts_interval_ms.unwrap_or(0),
         uplink_method: cfg
@@ -348,7 +364,7 @@ struct XhttpShared {
     base_url: String,
     session_id: Option<String>,
     headers: HashMap<String, String>,
-    seq: AtomicI64,
+    seq: SeqAtomic,
     max_post_bytes: usize,
     min_post_interval_ms: u64,
     uplink_method: String,
@@ -374,7 +390,7 @@ impl XhttpShared {
         }
     }
 
-    fn packet_url(&self, seq: i64) -> String {
+    fn packet_url(&self, seq: SeqInt) -> String {
         match &self.session_id {
             Some(sid) => format!("{}{}?session={}&seq={}", self.base_url, seq, sid, seq),
             None => format!("{}{}", self.base_url, seq),
@@ -493,7 +509,7 @@ async fn connect_packet_up(shared: Arc<XhttpShared>) -> anyhow::Result<XhttpStre
 }
 
 async fn post_packet(shared: &XhttpShared, payload: Bytes) -> anyhow::Result<()> {
-    let seq = shared.seq.fetch_add(1, Ordering::Relaxed);
+    let seq: SeqInt = shared.seq.fetch_add(1, Ordering::Relaxed);
     let url = shared.packet_url(seq);
     let method = parse_method(&shared.uplink_method);
     let req = shared.build_request(&method, &url, XhttpBody::Full(Full::new(payload)))?;
