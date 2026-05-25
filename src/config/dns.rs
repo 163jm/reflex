@@ -71,6 +71,7 @@ pub struct DnsServerConfig {
 
     /// 服务器地址，支持多种格式：
     /// - `1.2.3.4` / `1.2.3.4:53`          → UDP DNS（默认端口 53）
+    /// - `udp://1.2.3.4:53`                 → UDP DNS（显式前缀）
     /// - `tcp://1.2.3.4:53`                 → TCP DNS
     /// - `tls://1.2.3.4:853`                → DNS-over-TLS
     /// - `https://1.1.1.1/dns-query`        → DNS-over-HTTPS
@@ -128,6 +129,8 @@ impl DnsServerConfig {
             DnsProtocol::Doq
         } else if addr.starts_with("tcp://") {
             DnsProtocol::Tcp
+        } else if addr.starts_with("udp://") {
+            DnsProtocol::Udp
         } else if addr.starts_with("rcode://") {
             DnsProtocol::Rcode
         } else if addr.starts_with("fakeip://") {
@@ -309,6 +312,7 @@ mod tests {
             insecure: false,
         };
         assert_eq!(make("1.1.1.1").protocol(), DnsProtocol::Udp);
+        assert_eq!(make("udp://1.1.1.1:53").protocol(), DnsProtocol::Udp);
         assert_eq!(make("tcp://1.1.1.1:53").protocol(), DnsProtocol::Tcp);
         assert_eq!(make("tls://1.1.1.1:853").protocol(), DnsProtocol::Dot);
         assert_eq!(
