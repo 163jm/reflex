@@ -352,7 +352,15 @@ async fn run_proxy(args: Vec<String>) -> anyhow::Result<()> {
     let app = App::start_with_config(config).await?;
     tokio::select! {
         _ = signal_shutdown() => { info!("shutdown signal received"); }
-        _ = app.wait()        => { info!("all tasks exited"); }
+        res = app.wait() => {
+            match res {
+                Ok(()) => info!("all tasks exited"),
+                Err(e) => {
+                    error!(err=%e, "fatal error, exiting");
+                    std::process::exit(1);
+                }
+            }
+        }
     }
     Ok(())
 }
