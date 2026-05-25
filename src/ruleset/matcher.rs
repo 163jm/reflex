@@ -81,6 +81,12 @@ struct IpRanges<T: Copy + Ord> {
 }
 
 impl<T: Copy + Ord> IpRanges<T> {
+    fn len(&self) -> usize {
+        self.ranges.len()
+    }
+}
+
+impl<T: Copy + Ord> IpRanges<T> {
     fn build(cidrs: impl IntoIterator<Item = (T, T)>) -> Self {
         let mut ranges: Vec<(T, T)> = cidrs.into_iter().collect();
         ranges.sort_unstable_by_key(|&(lo, _)| lo);
@@ -367,6 +373,26 @@ impl RuleSet {
             ipv6_ranges,
             port_bitset,
         })
+    }
+
+    /// 返回此规则集的条目数（域名关键词数量 + IP 段数量 + 端口规则数量等）。
+    /// 编译后结构无法精确还原原始计数，此处返回合并后的可观测数量。
+    pub fn rule_count(&self) -> usize {
+        let domain_count = match &self.domain_matcher {
+            DomainMatcher::Fst { exact, suffix } => {
+                exact.as_ref().map(|s| s.len()).unwrap_or(0)
+                    + suffix.as_ref().map(|s| s.len()).unwrap_or(0)
+            }
+            DomainMatcher::Legacy { domains, suffix_trie } => {
+                domains.len() + suffix_trie.len()
+            }
+        };
+        let keyword_count = self.keywords.len();
+        let regex_count = self.regexes.as_ref().map(|r| r.len()).unwrap_or(0);
+        let ipv4_count = self.ipv4_ranges.len();
+        let ipv6_count = self.ipv6_ranges.len();
+        let port_count = if self.port_bitset.is_some() { 1 } else { 0 };
+        domain_count + keyword_count + regex_count + ipv4_count + ipv6_count + port_count
     }
 
     /// 主匹配入口

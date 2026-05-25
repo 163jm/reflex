@@ -52,6 +52,23 @@ pub enum RouteAction {
     },
 }
 
+// ── 规则集元数据（规则数量 + 加载时间）────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct RuleSetMeta {
+    /// 规则条目总数
+    pub rule_count: usize,
+    /// 最后加载/更新的 Unix 毫秒时间戳
+    pub updated_at_ms: u64,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 // ── 路由器 ────────────────────────────────────────────────────────────────────
 
 pub struct Router {
@@ -63,6 +80,10 @@ pub struct Router {
     default: RouteAction,
     /// 已加载的规则集，供 DNS 模块共享
     pub rulesets: std::collections::HashMap<String, std::sync::Arc<RuleSet>>,
+    /// 每个规则集的元数据（数量、更新时间）
+    pub ruleset_meta: std::collections::HashMap<String, RuleSetMeta>,
+    /// 原始配置，供刷新 remote 规则集时使用
+    route_config: RouteConfig,
 }
 
 impl Router {
@@ -73,9 +94,15 @@ impl Router {
         cache_writer: Option<&CacheFile>,
     ) -> anyhow::Result<Self> {
         let mut rulesets: HashMap<String, Arc<RuleSet>> = HashMap::new();
+        let mut ruleset_meta: HashMap<String, RuleSetMeta> = HashMap::new();
         for rs_ref in &config.rule_set {
-            let loaded = load_ruleset_ref(rs_ref, cache_reader, cache_writer)?;
-            rulesets.insert(rs_ref.tag.clone(), Arc::new(loaded));
+            let rs = load_ruleset_ref(rs_ref, cache_reader, cache_writer)?;
+            let rc = rs.rule_count();
+            ruleset_meta.insert(rs_ref.tag.clone(), RuleSetMeta {
+                rule_count: rc,
+                updated_at_ms: now_ms(),
+            });
+            rulesets.insert(rs_ref.tag.clone(), Arc::new(rs));
         }
 
         // 验证：hijack_dns=true 必须配合至少一个匹配条件
@@ -130,12 +157,60 @@ impl Router {
             idx_no_sniff_resolve,
             default,
             rulesets,
+            ruleset_meta,
+            route_config: config.clone(),
         })
     }
 
     /// 返回默认路由动作（用于 UDP 嗅探降级）
     pub fn default_action(&self) -> &RouteAction {
         &self.default
+    }
+
+    /// 重新下载并替换指定 remote 规则集。仅对 type=remote 的规则集有效。
+    /// 成功后更新 rulesets 和 ruleset_meta。
+    /// 注意：此方法会阻塞当前线程做网络下载，应在 tokio::task::spawn_blocking 里调用。
+    pub fn reload_remote_ruleset(&mut self, tag: &str) -> anyhow::Result<()> {
+        let rs_ref = self
+            .route_config
+            .rule_set
+            .iter()
+            .find(|r| r.tag == tag)
+            .ok_or_else(|| anyhow::anyhow!("rule_set '{tag}' not found"))?
+            .clone();
+
+        use crate::config::route::RuleSetType;
+        if rs_ref.r#type != RuleSetType::Remote {
+            anyhow::bail!("rule_set '{tag}' is not remote, cannot update");
+        }
+
+        let url = rs_ref.url.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("rule_set '{tag}': missing url")
+        })?;
+
+        // 强制从网络重新下载（忽略磁盘缓存）
+        let data = download_bytes(url, tag)?;
+
+        // 覆盖磁盘缓存
+        if let Some(path) = &rs_ref.path {
+            if let Some(parent) = std::path::Path::new(path).parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            std::fs::write(path, &data).ok();
+            tracing::debug!(tag, path, "rule_set: refreshed disk cache");
+        }
+
+        let loaded = crate::ruleset::LoadedRuleSet::from_bytes(&data)
+            .map_err(|e| anyhow::anyhow!("rule_set '{tag}': parse error: {e}"))?;
+        let rs = RuleSet::from_loaded(loaded)?;
+        let rc = rs.rule_count();
+        self.rulesets.insert(tag.to_string(), Arc::new(rs));
+        self.ruleset_meta.insert(tag.to_string(), RuleSetMeta {
+            rule_count: rc,
+            updated_at_ms: now_ms(),
+        });
+        tracing::info!(tag, rule_count = rc, "rule_set: refreshed");
+        Ok(())
     }
 
     pub fn route_tcp(&self, conn: &InboundTcpStream) -> (&RouteAction, &str, &str) {

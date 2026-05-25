@@ -3,6 +3,7 @@
 pub mod clash_api;
 pub mod dispatcher;
 pub mod outbound_mgr;
+pub mod ruleset_registry;
 pub mod sniff;
 pub mod stats;
 
@@ -24,6 +25,7 @@ use crate::{
 use clash_api::ClashApi;
 use dispatcher::Dispatcher;
 use outbound_mgr::OutboundManager;
+use ruleset_registry::RuleSetRegistry;
 use stats::Stats;
 
 #[cfg(target_os = "linux")]
@@ -377,6 +379,11 @@ impl App {
         if let Some(clash_api_config) = config.experimental.clash_api.clone() {
             if clash_api_config.enabled {
                 let route_cfg = Arc::new(config.route.clone());
+                // 构建规则集注册表（从 router 的元数据初始化）
+                let rs_registry = RuleSetRegistry::from_router_meta(
+                    config.route.clone(),
+                    router.ruleset_meta.clone(),
+                );
                 let clash_api = ClashApi::new(
                     clash_api_config,
                     outbound_mgr.clone(),
@@ -385,6 +392,7 @@ impl App {
                     config.inbounds.clone(),
                     config.log.level,
                     conn_tracker.clone(),
+                    rs_registry,
                 );
                 tasks.spawn(async move { clash_api.run().await });
             }

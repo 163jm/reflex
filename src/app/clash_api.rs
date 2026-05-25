@@ -36,7 +36,7 @@ use tokio::{
 use tracing::{debug, info};
 
 use crate::{
-    app::{outbound_mgr::OutboundManager, stats::Stats},
+    app::{outbound_mgr::OutboundManager, ruleset_registry::RuleSetRegistry, stats::Stats},
     config::{
         experimental::ClashApiConfig, inbound::InboundConfig, log::LogLevel, route::RouteConfig,
     },
@@ -246,6 +246,8 @@ pub struct ClashApi {
     inbound_configs: Vec<InboundConfig>,
     /// 当前日志级别，用于在 /configs 返回
     log_level: LogLevel,
+    /// 规则集注册表，用于查询元数据和触发 remote 规则集刷新
+    rs_registry: Arc<RuleSetRegistry>,
 }
 
 impl ClashApi {
@@ -257,6 +259,7 @@ impl ClashApi {
         inbound_configs: Vec<InboundConfig>,
         log_level: LogLevel,
         conn_tracker: Arc<ConnectionTracker>,
+        rs_registry: Arc<RuleSetRegistry>,
     ) -> Self {
         let mode = Arc::new(RwLock::new(config.default_mode.clone()));
 
@@ -289,6 +292,7 @@ impl ClashApi {
             log_tx,
             inbound_configs,
             log_level,
+            rs_registry,
         }
     }
 
@@ -416,7 +420,7 @@ impl ClashApi {
             ("DELETE", "/connections") => self.delete_connections(),
             ("GET", "/proxies") => self.get_proxies(),
             ("GET", "/providers/proxies") => json_response(json!({"providers": {}})),
-            ("GET", "/providers/rules") => self.get_rule_providers(),
+            ("GET", "/providers/rules") => self.get_rule_providers().await,
             ("GET", "/script") => json_response(json!({"code": ""})),
             ("GET", "/cache") => empty_response(204, "No Content"),
             ("GET", "/profile") => json_response(json!({"payload": ""})),
@@ -450,6 +454,11 @@ impl ClashApi {
             }
             _ if request.method == "GET" && path.starts_with("/providers/proxies/") => {
                 empty_response(204, "No Content")
+            }
+            _ if request.method == "PUT" && path.starts_with("/providers/rules/") => {
+                let name_enc = path.trim_start_matches("/providers/rules/");
+                let name = percent_decode(name_enc);
+                self.update_rule_provider(&name).await
             }
             _ if request.method == "GET" => self.serve_ui(path).await,
             _ => text_response(404, "Not Found", "not found"),
@@ -901,8 +910,9 @@ impl ClashApi {
 
     // ── /providers/rules ─────────────────────────────────────────────────────
 
-    fn get_rule_providers(&self) -> HttpResponse {
+    async fn get_rule_providers(&self) -> HttpResponse {
         use crate::config::route::RuleSetType;
+        let meta_map = self.rs_registry.snapshot().await;
         let providers: serde_json::Map<String, serde_json::Value> = self
             .route_config
             .rule_set
@@ -913,19 +923,49 @@ impl ClashApi {
                     RuleSetType::Remote => "HTTP",
                 };
                 let name = rs.tag.clone();
+                let (rule_count, updated_at) = meta_map
+                    .get(&name)
+                    .map(|m| (m.rule_count, ms_to_iso(m.updated_at_ms)))
+                    .unwrap_or((0, String::new()));
                 let val = json!({
                     "behavior": "domain",
                     "format": "binary",
                     "name": name,
-                    "ruleCount": 1,
+                    "ruleCount": rule_count,
                     "type": "Rule",
-                    "updatedAt": "",
+                    "updatedAt": updated_at,
                     "vehicleType": vehicle_type,
                 });
                 (name, val)
             })
             .collect();
         json_response(json!({ "providers": providers }))
+    }
+
+    /// PUT /providers/rules/:name — 触发远程规则集重新下载
+    async fn update_rule_provider(&self, name: &str) -> HttpResponse {
+        use crate::config::route::RuleSetType;
+        // 检查是否存在且为 remote
+        let is_remote = self
+            .route_config
+            .rule_set
+            .iter()
+            .find(|r| r.tag == name)
+            .map(|r| r.r#type == RuleSetType::Remote)
+            .unwrap_or(false);
+
+        if !is_remote {
+            return text_response(
+                400,
+                "Bad Request",
+                "rule_set is not remote or does not exist",
+            );
+        }
+
+        match self.rs_registry.reload_remote(name).await {
+            Ok(()) => empty_response(204, "No Content"),
+            Err(e) => text_response(500, "Internal Server Error", &e.to_string()),
+        }
     }
 
     // ── /rules ────────────────────────────────────────────────────────────────
