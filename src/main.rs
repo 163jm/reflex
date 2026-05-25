@@ -3,7 +3,7 @@ use anyhow::Context as _;
 use reflex::app::App;
 use reflex::config::log::LogLevel;
 use std::{env, fs, net::IpAddr, process};
-use tracing::info;
+use tracing::{error, info};
 
 use reflex::ruleset::{CompiledRuleSet, LoadedRuleSet, MatchTarget, RuleSet};
 
@@ -352,15 +352,7 @@ async fn run_proxy(args: Vec<String>) -> anyhow::Result<()> {
     let app = App::start_with_config(config).await?;
     tokio::select! {
         _ = signal_shutdown() => { info!("shutdown signal received"); }
-        res = app.wait() => {
-            match res {
-                Ok(()) => info!("all tasks exited"),
-                Err(e) => {
-                    error!(err=%e, "fatal error, exiting");
-                    std::process::exit(1);
-                }
-            }
-        }
+        _ = app.wait()        => { info!("all tasks exited"); }
     }
     Ok(())
 }
