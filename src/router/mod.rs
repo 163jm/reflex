@@ -192,6 +192,19 @@ impl Router {
         )
     }
 
+    /// UDP 命中 Sniff 规则后重新路由：跳过所有 Sniff 规则，继续匹配后续规则。
+    /// 与 TCP 的 route_tcp_after_sniff 对称，修复 UDP Sniff 降级直接跳到 final 的问题。
+    pub fn route_udp_after_sniff(&self, packet: &InboundUdpPacket) -> (&RouteAction, &str, &str) {
+        self.route_indexed(
+            &self.idx_no_sniff,
+            &packet.inbound_tag,
+            Some(NetworkKind::Udp),
+            &packet.target,
+            packet.sniffed_protocol.as_deref(),
+            "post-sniff(udp)",
+        )
+    }
+
     pub fn route_udp(&self, packet: &InboundUdpPacket) -> (&RouteAction, &str, &str) {
         self.route(
             &packet.inbound_tag,
