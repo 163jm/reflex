@@ -487,9 +487,9 @@ async fn run_udp_session(
     };
 
     let _guard = UdpGuard::new(stats.tag(&outbound_tag));
-    let host = target.to_string();
+    let host = target.host();
     let dest_port = target.port();
-    let conn_guard = Arc::new(conn_tracker.register(
+    let conn_guard = conn_tracker.register(
         ConnInfo {
             network: "udp",
             host: &host,
@@ -499,43 +499,53 @@ async fn run_udp_session(
             outbound: &outbound_tag,
         },
         &rule_info,
-    ));
+    );
 
-    // 用中间 channel 拦截出站回包，统计下行字节后再转发给入站
-    let (intercept_tx, mut intercept_rx) = mpsc::channel::<(bytes::Bytes, SocketAddr)>(64);
-
-    // 启动转发任务：从中间 channel 收回包 → 统计下行字节 → 转发给入站 reply_tx
-    let conn_guard_down = conn_guard.clone();
-    let reply_tx_fwd = reply_tx.clone();
-    tokio::spawn(async move {
-        while let Some((data, addr)) = intercept_rx.recv().await {
-            conn_guard_down.add_bytes(0, data.len() as i64);
-            let _ = reply_tx_fwd.send((data, addr)).await;
-        }
-    });
+    // 获取实时计数器，用于 UDP 字节统计
+    let (live_up, live_down) = conn_guard
+        .live_counters()
+        .unwrap_or_else(|| (
+            std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+        ));
 
     // 从 data_rx 持续收包，每包构造一个 InboundUdpPacket 交给出站
-    // 出站的回包通过 intercept_tx → intercept_rx → reply_tx 链路转发
+    // 出站的回包通过 reply_tx 发回入站
     loop {
         let data = tokio::time::timeout(timeout, data_rx.recv()).await;
         match data {
             Ok(Some(payload)) => {
-                let up = payload.len() as i64;
+                let up_bytes = payload.len() as i64;
+                // 用包装过的 reply_tx 统计下行字节
+                let live_down_clone = live_down.clone();
+                let (counting_tx, mut counting_rx) = mpsc::channel::<(bytes::Bytes, SocketAddr)>(4);
+                let real_reply_tx = reply_tx.clone();
+                tokio::spawn(async move {
+                    use std::sync::atomic::Ordering;
+                    while let Some((data, addr)) = counting_rx.recv().await {
+                        let down_bytes = data.len() as i64;
+                        live_down_clone.fetch_add(down_bytes, Ordering::Relaxed);
+                        let _ = real_reply_tx.send((data, addr)).await;
+                    }
+                });
                 let packet = InboundUdpPacket {
                     data: payload,
                     src,
                     target: target.clone(),
                     inbound_tag: inbound_tag.clone(),
                     session: UdpSession {
-                        reply_tx: intercept_tx.clone(),
+                        reply_tx: counting_tx,
                     },
                     sniffed_protocol: None,
                     sniffed_domain: None,
                 };
-                conn_guard.add_bytes(up, 0);
                 if let Err(e) = ob.handle_udp(packet).await {
                     debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
                     // 出站报错不立即退出，继续等待下一个包（避免因单包错误中断整个会话）
+                } else {
+                    use std::sync::atomic::Ordering;
+                    live_up.fetch_add(up_bytes, Ordering::Relaxed);
+                    _guard.add_bytes(up_bytes as u64, 0);
                 }
             }
             Ok(None) => {
@@ -582,7 +592,7 @@ async fn dispatch_tcp(
             debug!(tag=%tag, target=%conn.target, "tcp → outbound");
             let guard = TcpGuard::new(stats.tag(&tag));
             // 注册到连接追踪器，conn_guard drop 时自动移除
-            let host = conn.target.to_string();
+            let host = conn.target.host();
             let dest_port = conn.target.port();
             let source = conn
                 .stream
@@ -599,9 +609,16 @@ async fn dispatch_tcp(
                 },
                 &rule_info,
             );
-            match ob.handle_tcp(conn).await {
+            match {
+                let (live_up, live_down) = conn_guard
+                    .live_counters()
+                    .unwrap_or_else(|| (
+                        std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                        std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                    ));
+                ob.handle_tcp_live(conn, live_up, live_down).await
+            } {
                 Ok((up, down)) => {
-                    conn_guard.add_bytes(up as i64, down as i64);
                     guard.add_bytes(up, down);
                     Ok(())
                 }
@@ -645,7 +662,7 @@ async fn dispatch_udp(
                 .ok_or_else(|| anyhow::anyhow!("outbound '{tag}' not found"))?;
             debug!(tag=%tag, target=%packet.target, "udp → outbound (direct)");
             let _guard = UdpGuard::new(stats.tag(&tag));
-            let host = packet.target.to_string();
+            let host = packet.target.host();
             let dest_port = packet.target.port();
             let conn_guard = conn_tracker.register(
                 ConnInfo {

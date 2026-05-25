@@ -247,7 +247,6 @@ impl Outbound for VmessOutbound {
         debug!(tag = %self.config.tag, target = %packet.target, "vmess udp relay");
 
         // 发送第一个包
-        let up = packet.data.len() as u64;
         vmess.write_all(&packet.data).await?;
         vmess.flush().await?;
 
@@ -256,12 +255,10 @@ impl Outbound for VmessOutbound {
         let src = packet.src;
         let timeout = std::time::Duration::from_secs(10);
         let mut buf = vec![0u8; 65535];
-        let mut down = 0u64;
         loop {
             match tokio::time::timeout(timeout, vmess.read(&mut buf)).await {
                 Ok(Ok(0)) | Err(_) => break,
                 Ok(Ok(n)) => {
-                    down += n as u64;
                     let _ = reply_tx
                         .send((Bytes::copy_from_slice(&buf[..n]), src))
                         .await;

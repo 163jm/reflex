@@ -278,7 +278,7 @@ impl Outbound for SelectorOutbound {
         // 双向转发，同时监听中断信号
         let (up, down) = relay_with_interrupt(conn.stream, remote, interrupt_rx).await;
         debug!(group=%self.config.tag, up=%up, down=%down, "selector tcp done");
-        Ok(())
+        Ok((up, down))
     }
 
     async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {

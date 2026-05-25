@@ -281,14 +281,12 @@ impl Outbound for TrojanOutbound {
 
         // 发送第一个 UDP 帧：[ATYP][ADDR][PORT][LEN 2B][CRLF][DATA]
         let udp_frame = build_udp_frame(&packet.target, &packet.data);
-        let up = packet.data.len() as u64;
         writer.write_all(&udp_frame).await?;
         writer.flush().await?;
 
         let timeout = std::time::Duration::from_secs(5);
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
-        let mut down = 0u64;
 
         loop {
             // 读取 UDP 帧头：[ATYP][ADDR][PORT] 可变长 + [LEN 2B][CRLF]
@@ -333,7 +331,6 @@ impl Outbound for TrojanOutbound {
                 Err(_) => break,
             }
 
-            down += data_len as u64;
             let _ = reply_tx.send((bytes::Bytes::from(data), src)).await;
         }
 

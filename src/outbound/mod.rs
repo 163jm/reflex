@@ -183,7 +183,25 @@ pub struct OutboundDelay {
 pub trait Outbound: Send + Sync + 'static {
     /// 处理一条 TCP 连接，返回 (上行字节数, 下行字节数)
     async fn handle_tcp(&self, conn: InboundTcpStream) -> anyhow::Result<(u64, u64)>;
-    /// 处理一个 UDP 包，返回 (上行字节数, 下行字节数)
+
+    /// 处理一条 TCP 连接，并实时更新 `live_up` / `live_down` 原子计数器。
+    /// 默认实现调用 `handle_tcp` 并在返回后一次性写入计数，
+    /// 各出站可覆盖此方法以实现逐包实时更新。
+    async fn handle_tcp_live(
+        &self,
+        conn: InboundTcpStream,
+        live_up: std::sync::Arc<std::sync::atomic::AtomicI64>,
+        live_down: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    ) -> anyhow::Result<(u64, u64)> {
+        use std::sync::atomic::Ordering;
+        let result = self.handle_tcp(conn).await;
+        if let Ok((up, down)) = &result {
+            live_up.store(*up as i64, Ordering::Relaxed);
+            live_down.store(*down as i64, Ordering::Relaxed);
+        }
+        result
+    }
+    /// 处理一个 UDP 包
     async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()>;
     fn tag(&self) -> &str;
 
@@ -236,6 +254,59 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> AsyncReadWrite for T {}
 /// 提升明显（减少系统调用次数）。
 ///
 /// 返回 `(a→b 字节数, b→a 字节数)`。
+/// 与 `relay` 相同，但每次转发时实时更新 `live_up` / `live_down` 原子计数器。
+/// 供连接追踪器实时上报上传/下载字节数使用。
+pub async fn relay_tracked<A, B>(
+    a: A,
+    b: B,
+    live_up: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    live_down: std::sync::Arc<std::sync::atomic::AtomicI64>,
+) -> (u64, u64)
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut ar, mut aw) = tokio::io::split(a);
+    let (mut br, mut bw) = tokio::io::split(b);
+
+    const BUF_SIZE: usize = 65536;
+
+    let (r1, r2) = tokio::join!(
+        copy_half_tracked(&mut ar, &mut bw, BUF_SIZE, live_up),
+        copy_half_tracked(&mut br, &mut aw, BUF_SIZE, live_down),
+    );
+    (r1, r2)
+}
+
+async fn copy_half_tracked<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    buf_size: usize,
+    counter: std::sync::Arc<std::sync::atomic::AtomicI64>,
+) -> u64
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    use std::sync::atomic::Ordering;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = vec![0u8; buf_size];
+    let mut total = 0u64;
+    loop {
+        let n = match reader.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        if writer.write_all(&buf[..n]).await.is_err() {
+            break;
+        }
+        total += n as u64;
+        counter.fetch_add(n as i64, Ordering::Relaxed);
+    }
+    let _ = writer.shutdown().await;
+    total
+}
+
 pub async fn relay<A, B>(a: A, b: B) -> (u64, u64)
 where
     A: AsyncRead + AsyncWrite + Unpin,

@@ -306,7 +306,7 @@ impl SocksOutbound {
     /// 2. 绑定本地 UDP socket，向 relay 地址发送封装好的数据报
     /// 3. 读取响应，去掉 SOCKS5 UDP 头后通过 reply_tx 返回
     /// 4. TCP 控制连接保持到函数返回（drop 即可，代理会同时关闭 UDP relay）
-    async fn socks5_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<(u64, u64)> {
+    async fn socks5_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
         // ── 1. UDP ASSOCIATE ───────────────────────────────────────────────────
         // 目标地址填 0.0.0.0:0（表示"我要发任意目标"，RFC 1928 §4）
         let placeholder = Target::Socket("0.0.0.0:0".parse()?);
@@ -351,7 +351,6 @@ impl SocksOutbound {
             }
         }
         dgram.extend_from_slice(&packet.data);
-        let up = packet.data.len() as u64;
 
         // ── 3. 发送并接收 ─────────────────────────────────────────────────────
         let local_bind = if relay_addr.is_ipv6() {
@@ -371,7 +370,6 @@ impl SocksOutbound {
 
         // ── 4. 去掉 SOCKS5 UDP 头，取出 payload ──────────────────────────────
         let payload = socks5_udp_strip_header(&buf[..n])?;
-        let down = payload.len() as u64;
         let _ = packet
             .session
             .reply_tx
@@ -523,7 +521,7 @@ impl Outbound for SocksOutbound {
         let remote = self.connect_tunnel(&conn.target).await?;
         let (up, down) = relay(conn.stream, remote).await;
         debug!(tag = %self.config.tag, up, down, "socks tcp done");
-        Ok(())
+        Ok((up, down))
     }
 
     async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {

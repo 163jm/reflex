@@ -141,7 +141,23 @@ impl Outbound for DirectOutbound {
 
         let (up, down) = relay(conn.stream, remote).await;
         debug!(tag=%self.config.tag, up=%up, down=%down, "direct tcp done");
-        Ok(())
+        Ok((up, down))
+    }
+
+    async fn handle_tcp_live(
+        &self,
+        conn: crate::inbound::InboundTcpStream,
+        live_up: std::sync::Arc<std::sync::atomic::AtomicI64>,
+        live_down: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    ) -> anyhow::Result<(u64, u64)> {
+        let addr = resolve_target_with_dns(&conn.target, self.resolver.as_ref()).await?;
+        debug!(tag=%self.config.tag, target=%conn.target, addr=%addr, "direct tcp (tracked)");
+
+        let remote = self.tcp_connect_addr(addr).await?;
+
+        let (up, down) = crate::outbound::relay_tracked(conn.stream, remote, live_up, live_down).await;
+        debug!(tag=%self.config.tag, up=%up, down=%down, "direct tcp done");
+        Ok((up, down))
     }
 
     async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
@@ -150,7 +166,6 @@ impl Outbound for DirectOutbound {
 
         // 每次创建独立 socket，彻底消除并发收包竞争（见 new_udp_socket 注释）
         let sock = self.new_udp_socket(dst).await?;
-        let up = packet.data.len() as u64;
         sock.send_to(&packet.data, dst).await?;
 
         let mut buf = vec![0u8; 65535];
@@ -166,22 +181,20 @@ impl Outbound for DirectOutbound {
                     debug!(expected=%dst, got=%from, "direct udp: unexpected source, dropping");
                     return Ok(());
                 }
-                let down = n as u64;
                 let _ = packet
                     .session
                     .reply_tx
                     .send((bytes::Bytes::copy_from_slice(&buf[..n]), packet.src))
                     .await;
-                Ok(())
             }
-            Ok(Err(e)) => Err(e.into()),
+            Ok(Err(e)) => return Err(e.into()),
             Err(_) => {
                 // UDP 无响应超时，记录 debug 日志便于排查（不作为错误上报，
                 // 上层如需重试由调用方决策）
                 debug!(tag=%self.config.tag, dst=%dst, "direct udp: response timeout (5s)");
-                Ok(())
             }
         }
+        Ok(())
     }
 }
 
@@ -216,7 +229,7 @@ impl Outbound for BlockOutbound {
     async fn handle_tcp(&self, conn: InboundTcpStream) -> anyhow::Result<(u64, u64)> {
         debug!(tag=%self.config.tag, target=%conn.target, "block tcp");
         drop(conn.stream); // RST/FIN
-        Ok(())
+        Ok((0, 0))
     }
 
     async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
