@@ -303,14 +303,14 @@ async fn handle_socks5_udp_associate(
     debug!(peer = %peer, udp_port = %local_addr.port(), "socks5 UDP ASSOCIATE");
 
     // 回包通道
-    let (reply_tx, mut reply_rx) = mpsc::channel::<(Bytes, SocketAddr)>(64);
+    let (reply_tx, mut reply_rx) = mpsc::channel::<(Bytes, SocketAddr, SocketAddr)>(64);
 
     // 回包发送任务
     {
         let sock = udp_sock.clone();
         tokio::spawn(async move {
-            while let Some((data, dst)) = reply_rx.recv().await {
-                // 封装成 SOCKS5 UDP 格式再发回
+            while let Some((data, dst, _spoofed_src)) = reply_rx.recv().await {
+                // 封装成 SOCKS5 UDP 格式再发回（SOCKS5 不需要伪造源地址）
                 let wrapped = wrap_socks5_udp(&data, dst);
                 if let Err(e) = sock.send_to(&wrapped, dst).await {
                     warn!(err = %e, "socks5 udp reply error");

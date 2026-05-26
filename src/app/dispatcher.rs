@@ -468,7 +468,7 @@ async fn run_udp_session(
     inbound_tag: String,
     outbound_tag: String,
     mut data_rx: mpsc::Receiver<bytes::Bytes>,
-    reply_tx: mpsc::Sender<(bytes::Bytes, SocketAddr)>,
+    reply_tx: mpsc::Sender<(bytes::Bytes, SocketAddr, SocketAddr)>,
     rule_info: RuleInfo,
     mgr: Arc<OutboundManager>,
     _dns_tx: DnsQueryTx,

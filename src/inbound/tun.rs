@@ -613,7 +613,7 @@ async fn accept_loop(
 // ── UDP 会话条目 ──────────────────────────────────────────────────────────────
 
 struct UdpEntry {
-    reply_tx: mpsc::Sender<(Bytes, SocketAddr)>,
+    reply_tx: mpsc::Sender<(Bytes, SocketAddr, SocketAddr)>,
     last_seen: Instant,
 }
 
@@ -952,10 +952,10 @@ async fn dispatch_udp(
 
     let entry = sessions.entry(key).or_insert_with(|| {
         debug!(src = %src, dst = %dst, "tun: new UDP session");
-        let (reply_tx, mut reply_rx) = mpsc::channel::<(Bytes, SocketAddr)>(64);
+        let (reply_tx, mut reply_rx) = mpsc::channel::<(Bytes, SocketAddr, SocketAddr)>(64);
         let w = writer.clone();
         tokio::spawn(async move {
-            while let Some((payload, orig_src)) = reply_rx.recv().await {
+            while let Some((payload, orig_src, _spoofed_src)) = reply_rx.recv().await {
                 // 统一调用 build_udp_reply_packet（返回原始 IP 包，不含 PI）
                 if let Some(pkt) = build_udp_reply_packet(orig_src, src, &payload) {
                     let is_v6 = matches!(orig_src, SocketAddr::V6(_));

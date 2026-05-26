@@ -370,10 +370,11 @@ impl SocksOutbound {
 
         // ── 4. 去掉 SOCKS5 UDP 头，取出 payload ──────────────────────────────
         let payload = socks5_udp_strip_header(&buf[..n])?;
+        let spoofed_src = packet.target.to_socket_addr_lossy();
         let _ = packet
             .session
             .reply_tx
-            .send((bytes::Bytes::copy_from_slice(payload), packet.src))
+            .send((bytes::Bytes::copy_from_slice(payload), packet.src, spoofed_src))
             .await;
 
         Ok(())
