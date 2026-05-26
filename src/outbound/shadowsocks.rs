@@ -798,7 +798,7 @@ impl Outbound for ShadowsocksOutbound {
         Ok(relay_ss(conn.stream, ss_rd, ss_wr).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, mut packet: InboundUdpPacket) -> anyhow::Result<()> {
         use tokio::net::UdpSocket;
 
         debug!(tag = %self.config.tag, target = %packet.target, "shadowsocks udp relay");
@@ -809,28 +809,69 @@ impl Outbound for ShadowsocksOutbound {
         } else {
             "0.0.0.0:0"
         };
-        let udp = UdpSocket::bind(local_bind).await?;
+        let udp = std::sync::Arc::new(UdpSocket::bind(local_bind).await?);
         apply_mark_to_udp(&udp, self.routing_mark)?;
         udp.connect(server_addr).await?;
 
         // 构建并发送加密 UDP 包：[salt][enc(addr+payload)+tag]
-        let mut addr_payload = encode_target(&packet.target);
-        addr_payload.extend_from_slice(&packet.data);
-
-        let wire = if self.method == Method::None {
-            addr_payload
-        } else {
-            let salt = self.random_salt();
-            let subkey = self.derive_subkey(&salt);
-            let mut cipher = AeadCipher::new(self.method, subkey);
-            cipher.seal(&mut addr_payload)?;
-            let mut pkt = salt;
-            pkt.extend_from_slice(&addr_payload);
-            pkt
+        let send_packet = |data: &[u8]| -> anyhow::Result<Vec<u8>> {
+            let mut addr_payload = encode_target(&packet.target);
+            addr_payload.extend_from_slice(data);
+            if self.method == Method::None {
+                Ok(addr_payload)
+            } else {
+                let salt = self.random_salt();
+                let subkey = self.derive_subkey(&salt);
+                let mut cipher = AeadCipher::new(self.method, subkey);
+                cipher.seal(&mut addr_payload)?;
+                let mut pkt = salt;
+                pkt.extend_from_slice(&addr_payload);
+                Ok(pkt)
+            }
         };
+
+        let wire = send_packet(&packet.data)?;
         udp.send(&wire).await?;
 
-        // 接收回包，简单去掉 salt 头后转发
+        // 若有后续上行包，spawn task 持续加密发送
+        if let Some(mut upstream_rx) = packet.upstream_rx.take() {
+            let udp_send = udp.clone();
+            let target_clone = packet.target.clone();
+            let method = self.method;
+            let key_material = self.key_material.clone();
+            tokio::spawn(async move {
+                use rand::RngCore;
+                while let Some(data) = upstream_rx.recv().await {
+                    let mut addr_payload = encode_target(&target_clone);
+                    addr_payload.extend_from_slice(&data);
+                    let wire = if method == Method::None {
+                        addr_payload
+                    } else {
+                        // 复用与 random_salt / derive_subkey 相同的逻辑
+                        let mut salt = vec![0u8; method.salt_len()];
+                        rand::thread_rng().fill_bytes(&mut salt);
+                        let key_len = method.key_len();
+                        let subkey = if method.is_2022() {
+                            ss2022_session_key(&key_material, &salt, key_len)
+                        } else {
+                            hkdf_sha1(&key_material, &salt, key_len)
+                        };
+                        let mut cipher = AeadCipher::new(method, subkey);
+                        if cipher.seal(&mut addr_payload).is_err() {
+                            break;
+                        }
+                        let mut pkt = salt;
+                        pkt.extend_from_slice(&addr_payload);
+                        pkt
+                    };
+                    if udp_send.send(&wire).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
+        // 持续接收回包（游戏服务器持续推送）
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
         let spoofed_src = packet.target.to_socket_addr_lossy();
@@ -850,4 +891,3 @@ impl Outbound for ShadowsocksOutbound {
         }
         Ok(())
     }
-}

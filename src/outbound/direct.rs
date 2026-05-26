@@ -154,36 +154,72 @@ impl Outbound for DirectOutbound {
         self.handle_tcp(conn).await
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, mut packet: InboundUdpPacket) -> anyhow::Result<()> {
         let dst = resolve_target_with_dns(&packet.target, self.resolver.as_ref()).await?;
         debug!(tag=%self.config.tag, target=%packet.target, dst=%dst, "direct udp");
 
-        // 每次创建独立 socket，彻底消除并发收包竞争（见 new_udp_socket 注释）
-        let sock = self.new_udp_socket(dst).await?;
+        // 每次会话创建一个独立 socket，整个会话期间复用（固定源端口）。
+        // 游戏服务器依赖源端口识别客户端，若每包换新 socket（新源端口）则无法通信。
+        let sock = std::sync::Arc::new(self.new_udp_socket(dst).await?);
+        // 发送第一个上行包
         sock.send_to(&packet.data, dst).await?;
 
-        let mut buf = vec![0u8; 65535];
-        match tokio::time::timeout(
-            tokio::time::Duration::from_secs(5),
-            sock.recv_from(&mut buf),
-        )
-        .await
-        {
-            Ok(Ok((n, _from))) => {
-                let spoofed_src = dst; // 伪造源地址 = 游戏服务器IP:port
-                let _ = packet
-                    .session
-                    .reply_tx
-                    .send((bytes::Bytes::copy_from_slice(&buf[..n]), packet.src, spoofed_src))
-                    .await;
-            }
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => {
-                // UDP 无响应超时，记录 debug 日志便于排查（不作为错误上报，
-                // 上层如需重试由调用方决策）
-                debug!(tag=%self.config.tag, dst=%dst, "direct udp: response timeout (5s)");
-            }
+        let reply_tx = packet.session.reply_tx.clone();
+        let client_src = packet.src;
+        let tag = self.config.tag.clone();
+
+        // 取出后续上行包通道（由 run_udp_session 注入）
+        let mut upstream_rx = packet.upstream_rx.take();
+
+        // Task 1：持续从 upstream_rx 接收后续上行包，用同一个 socket 发出
+        // 这保证整个游戏会话共用一个本地源端口
+        if let Some(mut rx) = upstream_rx.take() {
+            let sock_send = sock.clone();
+            tokio::spawn(async move {
+                while let Some(data) = rx.recv().await {
+                    if let Err(e) = sock_send.send_to(&data, dst).await {
+                        debug!(dst=%dst, err=%e, "direct udp: upstream send error");
+                        break;
+                    }
+                }
+            });
         }
+
+        // Task 2：持续从游戏服务器接收回包，转发给客户端（tproxy writeback）
+        // 5 秒无包后退出，此时 socket 销毁，会话结束
+        let sock_recv = sock;
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 65535];
+            loop {
+                if reply_tx.is_closed() {
+                    break;
+                }
+                match tokio::time::timeout(
+                    tokio::time::Duration::from_secs(5),
+                    sock_recv.recv_from(&mut buf),
+                )
+                .await
+                {
+                    Ok(Ok((n, _from))) => {
+                        let data = bytes::Bytes::copy_from_slice(&buf[..n]);
+                        let spoofed_src = dst; // 伪造源地址 = 游戏服务器 IP:port
+                        if reply_tx.send((data, client_src, spoofed_src)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        debug!(tag=%tag, dst=%dst, err=%e, "direct udp: recv error");
+                        break;
+                    }
+                    Err(_) => {
+                        // 5 秒内无回包，退出收包循环（会话空闲超时）
+                        debug!(tag=%tag, dst=%dst, "direct udp: idle timeout (5s), closing recv loop");
+                        break;
+                    }
+                }
+            }
+        });
+
         Ok(())
     }
 }

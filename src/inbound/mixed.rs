@@ -355,6 +355,7 @@ async fn handle_socks5_udp_associate(
                 },
                 sniffed_protocol: None,
                 sniffed_domain: None,
+                upstream_rx: None,
             };
 
             if tx2.send(packet).await.is_err() {

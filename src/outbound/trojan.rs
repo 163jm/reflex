@@ -265,7 +265,7 @@ impl Outbound for TrojanOutbound {
         Ok(relay(conn.stream, io).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, mut packet: InboundUdpPacket) -> anyhow::Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         debug!(
@@ -288,6 +288,21 @@ impl Outbound for TrojanOutbound {
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
         let spoofed_src = packet.target.to_socket_addr_lossy();
+        let target = packet.target.clone();
+
+        // 若有后续上行包通道，spawn task 持续将上行包写入 TCP 隧道
+        if let Some(mut upstream_rx) = packet.upstream_rx.take() {
+            tokio::spawn(async move {
+                while let Some(data) = upstream_rx.recv().await {
+                    let frame = build_udp_frame(&target, &data);
+                    if writer.write_all(&frame).await.is_err()
+                        || writer.flush().await.is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
 
         loop {
             // 读取 UDP 帧头：[ATYP][ADDR][PORT] 可变长 + [LEN 2B][CRLF]

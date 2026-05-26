@@ -509,16 +509,17 @@ async fn run_udp_session(
         )
     });
 
-    // 从 data_rx 持续收包，每包构造一个 InboundUdpPacket 交给出站
-    // 出站的回包通过 reply_tx 发回入站
+    // 将 data_rx（后续上行包通道）塞进第一个包，让出站实现在内部持续转发。
+    // 这样 direct 出站只创建一个 socket（固定源端口），游戏服务器不会因为源端口
+    // 变化而断连。代理出站若不理会 upstream_rx，则退化为只处理一个包的旧行为（兼容）。
     loop {
         let data = tokio::time::timeout(timeout, data_rx.recv()).await;
         match data {
-            Ok(Some(payload)) => {
-                let up_bytes = payload.len() as i64;
+            Ok(Some(first_payload)) => {
+                let up_bytes = first_payload.len() as i64;
                 // 用包装过的 reply_tx 统计下行字节
                 let live_down_clone = live_down.clone();
-                let (counting_tx, mut counting_rx) = mpsc::channel::<(bytes::Bytes, SocketAddr, SocketAddr)>(4);
+                let (counting_tx, mut counting_rx) = mpsc::channel::<(bytes::Bytes, SocketAddr, SocketAddr)>(64);
                 let real_reply_tx = reply_tx.clone();
                 tokio::spawn(async move {
                     use std::sync::atomic::Ordering;
@@ -529,7 +530,7 @@ async fn run_udp_session(
                     }
                 });
                 let packet = InboundUdpPacket {
-                    data: payload,
+                    data: first_payload,
                     src,
                     target: target.clone(),
                     inbound_tag: inbound_tag.clone(),
@@ -538,23 +539,23 @@ async fn run_udp_session(
                     },
                     sniffed_protocol: None,
                     sniffed_domain: None,
+                    // 把剩余上行包通道交给出站，让它用同一个 socket 持续发包
+                    upstream_rx: Some(data_rx),
                 };
                 if let Err(e) = ob.handle_udp(packet).await {
                     debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
-                    // 出站报错不立即退出，继续等待下一个包（避免因单包错误中断整个会话）
-                } else {
-                    use std::sync::atomic::Ordering;
-                    live_up.fetch_add(up_bytes, Ordering::Relaxed);
-                    _guard.add_bytes(up_bytes as u64, 0);
                 }
+                use std::sync::atomic::Ordering;
+                live_up.fetch_add(up_bytes, Ordering::Relaxed);
+                _guard.add_bytes(up_bytes as u64, 0);
+                // handle_udp 已接管 data_rx，session 生命周期由出站管理，此处退出
+                break;
             }
             Ok(None) => {
-                // data_rx 已关闭（Dispatcher 退出），结束会话
                 debug!(src=%src, dst=%target, "udp session: data_rx closed");
                 break;
             }
             Err(_) => {
-                // 超时，会话空闲太久，主动关闭
                 debug!(src=%src, dst=%target, outbound=%outbound_tag, timeout=?timeout, "udp session: idle timeout");
                 break;
             }

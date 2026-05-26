@@ -982,6 +982,7 @@ async fn dispatch_udp(
         session,
         sniffed_protocol: None,
         sniffed_domain: None,
+        upstream_rx: None,
     };
     if udp_tx.send(packet).await.is_err() {
         debug!("tun: udp_tx closed");

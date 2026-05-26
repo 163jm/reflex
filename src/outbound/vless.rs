@@ -342,7 +342,7 @@ impl Outbound for VlessOutbound {
         Ok(relay(conn.stream, io).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, mut packet: InboundUdpPacket) -> anyhow::Result<()> {
         use crate::outbound::proto::{
             vless_build_udp_request, vless_decode_udp_frame_len, vless_encode_udp_frame,
         };
@@ -364,6 +364,20 @@ impl Outbound for VlessOutbound {
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
         let spoofed_src = packet.target.to_socket_addr_lossy();
+
+        // 若有后续上行包，spawn task 持续将上行包写入 VLESS 隧道
+        if let Some(mut upstream_rx) = packet.upstream_rx.take() {
+            tokio::spawn(async move {
+                while let Some(data) = upstream_rx.recv().await {
+                    let frame = vless_encode_udp_frame(&data);
+                    if writer.write_all(&frame).await.is_err()
+                        || writer.flush().await.is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
 
         loop {
             let mut len_buf = [0u8; 2];

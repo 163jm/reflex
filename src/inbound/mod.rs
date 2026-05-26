@@ -172,6 +172,10 @@ pub struct InboundUdpPacket {
     pub sniffed_domain: Option<String>,
     /// UDP 会话句柄（用于后续回包）
     pub session: UdpSession,
+    /// 后续上行包通道（仅在 dispatcher run_udp_session 里非 None）。
+    /// 出站实现收到后应持续从此通道读取并发往服务端，直到通道关闭或超时。
+    /// 这保证整个会话共用同一个出站 socket（固定源端口），游戏协议要求此行为。
+    pub upstream_rx: Option<tokio::sync::mpsc::Receiver<bytes::Bytes>>,
 }
 
 /// 连接目标：域名或 IP

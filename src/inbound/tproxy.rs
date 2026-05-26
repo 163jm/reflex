@@ -341,6 +341,7 @@ async fn run_udp(
                     session,
                     sniffed_protocol: None,
                     sniffed_domain: None,
+                    upstream_rx: None,
                 };
 
                 if tx.send(packet).await.is_err() {

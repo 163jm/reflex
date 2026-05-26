@@ -306,7 +306,7 @@ impl SocksOutbound {
     /// 2. 绑定本地 UDP socket，向 relay 地址发送封装好的数据报
     /// 3. 读取响应，去掉 SOCKS5 UDP 头后通过 reply_tx 返回
     /// 4. TCP 控制连接保持到函数返回（drop 即可，代理会同时关闭 UDP relay）
-    async fn socks5_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn socks5_udp(&self, mut packet: InboundUdpPacket) -> anyhow::Result<()> {
         // ── 1. UDP ASSOCIATE ───────────────────────────────────────────────────
         // 目标地址填 0.0.0.0:0（表示"我要发任意目标"，RFC 1928 §4）
         let placeholder = Target::Socket("0.0.0.0:0".parse()?);
@@ -327,55 +327,83 @@ impl SocksOutbound {
 
         // ── 2. 封装 UDP 数据报（SOCKS5 UDP 请求头）──────────────────────────────
         // 格式：RSV(2) FRAG(1) ATYP(1) DST.ADDR DST.PORT(2) DATA
-        let mut dgram: Vec<u8> = Vec::with_capacity(packet.data.len() + 22);
-        dgram.extend_from_slice(&[0x00, 0x00, 0x00]); // RSV + FRAG=0
-
-        match &packet.target {
-            Target::Socket(addr) => match addr.ip() {
-                IpAddr::V4(ip) => {
-                    dgram.push(SOCKS5_ATYP_IPV4);
-                    dgram.extend_from_slice(&ip.octets());
-                    dgram.extend_from_slice(&addr.port().to_be_bytes());
+        let build_dgram = |target: &Target, data: &[u8]| -> Vec<u8> {
+            let mut dgram: Vec<u8> = Vec::with_capacity(data.len() + 22);
+            dgram.extend_from_slice(&[0x00, 0x00, 0x00]); // RSV + FRAG=0
+            match target {
+                Target::Socket(addr) => match addr.ip() {
+                    IpAddr::V4(ip) => {
+                        dgram.push(SOCKS5_ATYP_IPV4);
+                        dgram.extend_from_slice(&ip.octets());
+                        dgram.extend_from_slice(&addr.port().to_be_bytes());
+                    }
+                    IpAddr::V6(ip) => {
+                        dgram.push(SOCKS5_ATYP_IPV6);
+                        dgram.extend_from_slice(&ip.octets());
+                        dgram.extend_from_slice(&addr.port().to_be_bytes());
+                    }
+                },
+                Target::Domain(host, port) => {
+                    dgram.push(SOCKS5_ATYP_DOMAIN);
+                    dgram.push(host.len() as u8);
+                    dgram.extend_from_slice(host.as_bytes());
+                    dgram.extend_from_slice(&port.to_be_bytes());
                 }
-                IpAddr::V6(ip) => {
-                    dgram.push(SOCKS5_ATYP_IPV6);
-                    dgram.extend_from_slice(&ip.octets());
-                    dgram.extend_from_slice(&addr.port().to_be_bytes());
-                }
-            },
-            Target::Domain(host, port) => {
-                dgram.push(SOCKS5_ATYP_DOMAIN);
-                dgram.push(host.len() as u8);
-                dgram.extend_from_slice(host.as_bytes());
-                dgram.extend_from_slice(&port.to_be_bytes());
             }
-        }
-        dgram.extend_from_slice(&packet.data);
+            dgram.extend_from_slice(data);
+            dgram
+        };
 
-        // ── 3. 发送并接收 ─────────────────────────────────────────────────────
+        // ── 3. 发送并持续接收 ─────────────────────────────────────────────────
         let local_bind = if relay_addr.is_ipv6() {
             "[::]:0"
         } else {
             "0.0.0.0:0"
         };
-        let udp = tokio::net::UdpSocket::bind(local_bind).await?;
+        let udp = std::sync::Arc::new(tokio::net::UdpSocket::bind(local_bind).await?);
         apply_mark_to_udp(&udp, self.routing_mark)?;
-        udp.send_to(&dgram, relay_addr).await?;
+        udp.send_to(&build_dgram(&packet.target, &packet.data), relay_addr).await?;
 
+        // 若有后续上行包，spawn task 持续封装并发送
+        if let Some(mut upstream_rx) = packet.upstream_rx.take() {
+            let udp_send = udp.clone();
+            let target_clone = packet.target.clone();
+            tokio::spawn(async move {
+                while let Some(data) = upstream_rx.recv().await {
+                    let dgram = build_dgram(&target_clone, &data);
+                    if udp_send.send_to(&dgram, relay_addr).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
+        // ── 4. 持续接收回包，去掉 SOCKS5 UDP 头后转发 ────────────────────────
         let mut buf = vec![0u8; 65535];
-        let (n, _from) =
-            tokio::time::timeout(std::time::Duration::from_secs(5), udp.recv_from(&mut buf))
-                .await
-                .map_err(|_| anyhow::anyhow!("socks5 udp: response timeout"))??;
-
-        // ── 4. 去掉 SOCKS5 UDP 头，取出 payload ──────────────────────────────
-        let payload = socks5_udp_strip_header(&buf[..n])?;
+        let reply_tx = packet.session.reply_tx.clone();
+        let src = packet.src;
         let spoofed_src = packet.target.to_socket_addr_lossy();
-        let _ = packet
-            .session
-            .reply_tx
-            .send((bytes::Bytes::copy_from_slice(payload), packet.src, spoofed_src))
-            .await;
+
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                udp.recv_from(&mut buf),
+            )
+            .await
+            {
+                Ok(Ok((n, _from))) => {
+                    match socks5_udp_strip_header(&buf[..n]) {
+                        Ok(payload) => {
+                            let _ = reply_tx
+                                .send((bytes::Bytes::copy_from_slice(payload), src, spoofed_src))
+                                .await;
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                _ => break,
+            }
+        }
 
         Ok(())
     }

@@ -241,7 +241,7 @@ impl Outbound for VmessOutbound {
         Ok(relay(conn.stream, vmess).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, mut packet: InboundUdpPacket) -> anyhow::Result<()> {
         let raw = self.connect_raw().await?;
         let mut vmess = self.handshake(raw, &packet.target, CMD_UDP).await?;
         debug!(tag = %self.config.tag, target = %packet.target, "vmess udp relay");
@@ -250,21 +250,46 @@ impl Outbound for VmessOutbound {
         vmess.write_all(&packet.data).await?;
         vmess.flush().await?;
 
-        // 回包转发
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
         let spoofed_src = packet.target.to_socket_addr_lossy();
         let timeout = std::time::Duration::from_secs(10);
         let mut buf = vec![0u8; 65535];
-        loop {
-            match tokio::time::timeout(timeout, vmess.read(&mut buf)).await {
-                Ok(Ok(0)) | Err(_) => break,
-                Ok(Ok(n)) => {
-                    let _ = reply_tx
-                        .send((Bytes::copy_from_slice(&buf[..n]), src, spoofed_src))
-                        .await;
+
+        // 若有后续上行包，spawn task 持续写入 vmess 隧道
+        if let Some(mut upstream_rx) = packet.upstream_rx.take() {
+            let (mut vmess_rd, mut vmess_wr) = tokio::io::split(vmess);
+            tokio::spawn(async move {
+                while let Some(data) = upstream_rx.recv().await {
+                    if vmess_wr.write_all(&data).await.is_err()
+                        || vmess_wr.flush().await.is_err()
+                    {
+                        break;
+                    }
                 }
-                Ok(Err(_)) => break,
+            });
+            loop {
+                match tokio::time::timeout(timeout, vmess_rd.read(&mut buf)).await {
+                    Ok(Ok(0)) | Err(_) => break,
+                    Ok(Ok(n)) => {
+                        let _ = reply_tx
+                            .send((Bytes::copy_from_slice(&buf[..n]), src, spoofed_src))
+                            .await;
+                    }
+                    Ok(Err(_)) => break,
+                }
+            }
+        } else {
+            loop {
+                match tokio::time::timeout(timeout, vmess.read(&mut buf)).await {
+                    Ok(Ok(0)) | Err(_) => break,
+                    Ok(Ok(n)) => {
+                        let _ = reply_tx
+                            .send((Bytes::copy_from_slice(&buf[..n]), src, spoofed_src))
+                            .await;
+                    }
+                    Ok(Err(_)) => break,
+                }
             }
         }
         Ok(())
