@@ -603,7 +603,8 @@ impl Outbound for Hy2Outbound {
                 // 收到的包可能是分片，需要重组
                 match recv_udp_reassemble(&qconn, data).await {
                     Ok(Some(payload)) => {
-                        let _ = packet.session.reply_tx.send((payload, packet.src)).await;
+                        let spoofed_src = packet.target.to_socket_addr_lossy();
+                        let _ = packet.session.reply_tx.send((payload, packet.src, spoofed_src)).await;
                     }
                     Ok(None) => {} // 分片不完整，已超时丢弃
                     Err(e) => warn!(err = %e, "hy2 udp reassemble error"),

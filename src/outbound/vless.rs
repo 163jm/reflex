@@ -363,6 +363,7 @@ impl Outbound for VlessOutbound {
         let timeout = std::time::Duration::from_secs(5);
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
+        let spoofed_src = packet.target.to_socket_addr_lossy();
 
         loop {
             let mut len_buf = [0u8; 2];
@@ -382,7 +383,7 @@ impl Outbound for VlessOutbound {
                 Ok(Err(e)) => return Err(e.into()),
                 Err(_) => break,
             }
-            let _ = reply_tx.send((bytes::Bytes::from(data), src)).await;
+            let _ = reply_tx.send((bytes::Bytes::from(data), src, spoofed_src)).await;
         }
         Ok(())
     }

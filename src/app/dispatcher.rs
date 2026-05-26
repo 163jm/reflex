@@ -518,14 +518,14 @@ async fn run_udp_session(
                 let up_bytes = payload.len() as i64;
                 // 用包装过的 reply_tx 统计下行字节
                 let live_down_clone = live_down.clone();
-                let (counting_tx, mut counting_rx) = mpsc::channel::<(bytes::Bytes, SocketAddr)>(4);
+                let (counting_tx, mut counting_rx) = mpsc::channel::<(bytes::Bytes, SocketAddr, SocketAddr)>(4);
                 let real_reply_tx = reply_tx.clone();
                 tokio::spawn(async move {
                     use std::sync::atomic::Ordering;
-                    while let Some((data, addr)) = counting_rx.recv().await {
+                    while let Some((data, addr, spoofed_src)) = counting_rx.recv().await {
                         let down_bytes = data.len() as i64;
                         live_down_clone.fetch_add(down_bytes, Ordering::Relaxed);
-                        let _ = real_reply_tx.send((data, addr)).await;
+                        let _ = real_reply_tx.send((data, addr, spoofed_src)).await;
                     }
                 });
                 let packet = InboundUdpPacket {
@@ -754,6 +754,6 @@ async fn handle_dns_udp(packet: InboundUdpPacket, dns_tx: DnsQueryTx) -> anyhow:
         .await
         .map_err(|_| anyhow::anyhow!("dns reply dropped"))?;
 
-    let _ = packet.session.reply_tx.send((resp, packet.src)).await;
+    let _ = packet.session.reply_tx.send((resp, packet.src, packet.target.to_socket_addr_lossy())).await;
     Ok(())
 }

@@ -208,7 +208,8 @@ fn get_original_dst_tcp(stream: &TcpStream) -> anyhow::Result<SocketAddr> {
 
 /// UDP 会话：(src, dst) → 回包 sender，带最后活跃时间
 struct UdpSessionEntry {
-    reply_tx: mpsc::Sender<(Bytes, SocketAddr)>,
+    /// (数据, 客户端地址, 伪造源地址) — 伪造源地址 = 原始目标（游戏服务器IP:port）
+    reply_tx: mpsc::Sender<(Bytes, SocketAddr, SocketAddr)>,
     last_seen: Instant,
     /// 该会话的空闲超时时长（按目标端口决定）
     timeout: Duration,
@@ -266,15 +267,18 @@ async fn run_udp(
     tag: String,
 ) -> anyhow::Result<()> {
     let async_fd = Arc::new(AsyncFd::new(socket)?);
-    let (global_reply_tx, mut global_reply_rx) = mpsc::channel::<(Bytes, SocketAddr)>(256);
+    // (数据, 客户端地址, 伪造源地址=游戏服务器IP:port)
+    let (global_reply_tx, mut global_reply_rx) = mpsc::channel::<(Bytes, SocketAddr, SocketAddr)>(256);
 
-    // 回包发送循环
+    // 回包发送循环：用 sendmsg + IP_PKTINFO 伪造源地址
+    // TProxy UDP 回包必须让客户端看到源地址是游戏服务器IP，否则客户端直接丢包
     {
         let afd = async_fd.clone();
+        let fd = afd.get_ref().as_raw_fd();
         tokio::spawn(async move {
-            while let Some((data, dst)) = global_reply_rx.recv().await {
+            while let Some((data, dst, src)) = global_reply_rx.recv().await {
                 loop {
-                    match afd.get_ref().send_to(&data, dst) {
+                    match sendmsg_with_src(fd, &data, dst, src) {
                         Ok(_) => break,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             if let Ok(mut guard) = afd.writable().await {
@@ -282,7 +286,7 @@ async fn run_udp(
                             }
                         }
                         Err(e) => {
-                            warn!(err=%e, dst=%dst, "tproxy udp send error");
+                            warn!(err=%e, dst=%dst, src=%src, "tproxy udp send error");
                             break;
                         }
                     }
@@ -415,6 +419,134 @@ fn sockaddr_storage_to_socketaddr(ss: &libc::sockaddr_storage) -> anyhow::Result
             other => anyhow::bail!("unknown address family: {other}"),
         }
     }
+}
+
+// ── sendmsg（伪造源地址，用于 TProxy UDP 回包）───────────────────────────────
+//
+// TProxy UDP 回包必须让客户端看到源地址是原始目标（游戏服务器IP:port），
+// 否则客户端收到源地址不匹配的包会直接丢弃。
+// 实现方式：IP_TRANSPARENT socket + sendmsg + IP_PKTINFO 指定源IP。
+
+fn sendmsg_with_src(
+    fd: RawFd,
+    data: &[u8],
+    dst: SocketAddr,  // 发往客户端的地址
+    src: SocketAddr,  // 伪造的源地址（原始目标，即游戏服务器IP:port）
+) -> std::io::Result<()> {
+    unsafe {
+        match (src, dst) {
+            (SocketAddr::V4(src4), SocketAddr::V4(dst4)) => {
+                // 构造目标地址
+                let dst_sa = libc::sockaddr_in {
+                    sin_family: libc::AF_INET as libc::sa_family_t,
+                    sin_port: dst4.port().to_be(),
+                    sin_addr: libc::in_addr {
+                        s_addr: u32::from(*dst4.ip()).to_be(),
+                    },
+                    sin_zero: [0; 8],
+                };
+
+                // 构造 iovec
+                let mut iov = libc::iovec {
+                    iov_base: data.as_ptr() as *mut libc::c_void,
+                    iov_len: data.len(),
+                };
+
+                // 构造 cmsghdr 携带 IP_PKTINFO（指定源IP）
+                #[repr(C)]
+                struct CmsgPktinfo {
+                    hdr: libc::cmsghdr,
+                    pkt: libc::in_pktinfo,
+                }
+                let mut cmsg = CmsgPktinfo {
+                    hdr: libc::cmsghdr {
+                        cmsg_len: libc::CMSG_LEN(
+                            std::mem::size_of::<libc::in_pktinfo>() as u32
+                        ) as _,
+                        cmsg_level: libc::IPPROTO_IP,
+                        cmsg_type: libc::IP_PKTINFO,
+                    },
+                    pkt: libc::in_pktinfo {
+                        ipi_ifindex: 0, // 让内核选择接口
+                        ipi_spec_dst: libc::in_addr {
+                            s_addr: u32::from(*src4.ip()).to_be(),
+                        },
+                        ipi_addr: libc::in_addr { s_addr: 0 },
+                    },
+                };
+
+                let mut msg: libc::msghdr = std::mem::zeroed();
+                msg.msg_name = &dst_sa as *const _ as *mut libc::c_void;
+                msg.msg_namelen = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+                msg.msg_iov = &mut iov;
+                msg.msg_iovlen = 1;
+                msg.msg_control = &mut cmsg as *mut _ as *mut libc::c_void;
+                msg.msg_controllen = std::mem::size_of::<CmsgPktinfo>() as _;
+
+                let n = libc::sendmsg(fd, &msg, 0);
+                if n < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            (SocketAddr::V6(src6), SocketAddr::V6(dst6)) => {
+                let dst_sa = libc::sockaddr_in6 {
+                    sin6_family: libc::AF_INET6 as libc::sa_family_t,
+                    sin6_port: dst6.port().to_be(),
+                    sin6_flowinfo: 0,
+                    sin6_addr: libc::in6_addr {
+                        s6_addr: src6.ip().octets(),
+                    },
+                    sin6_scope_id: 0,
+                };
+
+                #[repr(C)]
+                struct CmsgPktinfo6 {
+                    hdr: libc::cmsghdr,
+                    pkt: libc::in6_pktinfo,
+                }
+                let mut cmsg = CmsgPktinfo6 {
+                    hdr: libc::cmsghdr {
+                        cmsg_len: libc::CMSG_LEN(
+                            std::mem::size_of::<libc::in6_pktinfo>() as u32
+                        ) as _,
+                        cmsg_level: libc::IPPROTO_IPV6,
+                        cmsg_type: libc::IPV6_PKTINFO,
+                    },
+                    pkt: libc::in6_pktinfo {
+                        ipi6_addr: libc::in6_addr {
+                            s6_addr: src6.ip().octets(),
+                        },
+                        ipi6_ifindex: 0,
+                    },
+                };
+
+                let mut iov = libc::iovec {
+                    iov_base: data.as_ptr() as *mut libc::c_void,
+                    iov_len: data.len(),
+                };
+                let mut msg: libc::msghdr = std::mem::zeroed();
+                msg.msg_name = &dst_sa as *const _ as *mut libc::c_void;
+                msg.msg_namelen = std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
+                msg.msg_iov = &mut iov;
+                msg.msg_iovlen = 1;
+                msg.msg_control = &mut cmsg as *mut _ as *mut libc::c_void;
+                msg.msg_controllen = std::mem::size_of::<CmsgPktinfo6>() as _;
+
+                let n = libc::sendmsg(fd, &msg, 0);
+                if n < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            _ => {
+                // IPv4/IPv6 混用，不应发生，降级为普通 send_to
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "src/dst address family mismatch",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn extract_original_dst_from_cmsg(msg: &libc::msghdr) -> anyhow::Result<SocketAddr> {

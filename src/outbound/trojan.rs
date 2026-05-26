@@ -287,6 +287,7 @@ impl Outbound for TrojanOutbound {
         let timeout = std::time::Duration::from_secs(5);
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
+        let spoofed_src = packet.target.to_socket_addr_lossy();
 
         loop {
             // 读取 UDP 帧头：[ATYP][ADDR][PORT] 可变长 + [LEN 2B][CRLF]
@@ -331,14 +332,7 @@ impl Outbound for TrojanOutbound {
                 Err(_) => break,
             }
 
-            let _ = reply_tx.send((bytes::Bytes::from(data), src)).await;
-        }
-
-        Ok(())
-    }
-}
-
-// ── 辅助函数 ──────────────────────────────────────────────────────────────────
+            let _ = reply_tx.send((bytes::Bytes::from(data), src, spoofed_src)).await;// ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
 /// 计算 Trojan 密钥：SHA-224(password) → hex → 56 字节 ASCII
 fn derive_key(password: &str) -> [u8; KEY_LEN] {

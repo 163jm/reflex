@@ -261,6 +261,7 @@ impl Outbound for TuicOutbound {
         // 接收回包
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
+        let spoofed_src = packet.target.to_socket_addr_lossy();
         let timeout = Duration::from_secs(10);
 
         loop {
@@ -268,7 +269,7 @@ impl Outbound for TuicOutbound {
                 Ok(Ok(data)) => {
                     // 解析收到的 datagram，提取数据部分
                     if let Some(payload) = parse_udp_datagram_payload(&data) {
-                        let _ = reply_tx.send((payload, src)).await;
+                        let _ = reply_tx.send((payload, src, spoofed_src)).await;
                     }
                 }
                 Ok(Err(e)) => {

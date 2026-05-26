@@ -197,6 +197,14 @@ impl Target {
             Self::Socket(a) => a.ip().to_string(),
         }
     }
+
+    /// 将 Target 转为 SocketAddr，Domain 类型使用 0.0.0.0 占位（仅用于回包伪造源地址场景）
+    pub fn to_socket_addr_lossy(&self) -> SocketAddr {
+        match self {
+            Self::Socket(a) => *a,
+            Self::Domain(_, p) => SocketAddr::from(([0, 0, 0, 0], *p)),
+        }
+    }
 }
 
 impl std::fmt::Display for Target {
@@ -211,6 +219,6 @@ impl std::fmt::Display for Target {
 /// UDP 会话句柄，入站层持有，用于将出站的回包写回给客户端。
 #[derive(Debug, Clone)]
 pub struct UdpSession {
-    /// 用于回包的 socket（Arc 共享）
-    pub reply_tx: tokio::sync::mpsc::Sender<(bytes::Bytes, SocketAddr)>,
+    /// 用于回包：(数据, 客户端地址, 伪造源地址=原始目标IP)
+    pub reply_tx: tokio::sync::mpsc::Sender<(bytes::Bytes, SocketAddr, SocketAddr)>,
 }

@@ -169,16 +169,12 @@ impl Outbound for DirectOutbound {
         )
         .await
         {
-            Ok(Ok((n, from))) => {
-                if from != dst {
-                    // 独立 socket 下几乎不会发生，但保留防御性检查
-                    debug!(expected=%dst, got=%from, "direct udp: unexpected source, dropping");
-                    return Ok(());
-                }
+            Ok(Ok((n, _from))) => {
+                let spoofed_src = dst; // 伪造源地址 = 游戏服务器IP:port
                 let _ = packet
                     .session
                     .reply_tx
-                    .send((bytes::Bytes::copy_from_slice(&buf[..n]), packet.src))
+                    .send((bytes::Bytes::copy_from_slice(&buf[..n]), packet.src, spoofed_src))
                     .await;
             }
             Ok(Err(e)) => return Err(e.into()),
