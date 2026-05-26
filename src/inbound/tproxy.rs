@@ -270,30 +270,17 @@ async fn run_udp(
     // (数据, 客户端地址, 伪造源地址=游戏服务器IP:port)
     let (global_reply_tx, mut global_reply_rx) = mpsc::channel::<(Bytes, SocketAddr, SocketAddr)>(256);
 
-    // 回包发送循环：用 sendmsg + IP_PKTINFO 伪造源地址
-    // TProxy UDP 回包必须让客户端看到源地址是游戏服务器IP，否则客户端直接丢包
-    {
-        let afd = async_fd.clone();
-        let fd = afd.get_ref().as_raw_fd();
-        tokio::spawn(async move {
-            while let Some((data, dst, src)) = global_reply_rx.recv().await {
-                loop {
-                    match sendmsg_with_src(fd, &data, dst, src) {
-                        Ok(_) => break,
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            if let Ok(mut guard) = afd.writable().await {
-                                guard.clear_ready();
-                            }
-                        }
-                        Err(e) => {
-                            warn!(err=%e, dst=%dst, src=%src, "tproxy udp send error");
-                            break;
-                        }
-                    }
-                }
+    // 回包发送循环：照抄 sing-box tproxyPacketWriter 的做法
+    // 新建一个 IP_TRANSPARENT socket，bind 到游戏服务器的 IP:port，
+    // 然后直接 send_to 客户端——客户端收到的源地址天然就是游戏服务器地址。
+    tokio::spawn(async move {
+        while let Some((data, client_addr, server_addr)) = global_reply_rx.recv().await {
+            match tproxy_udp_writeback(&data, client_addr, server_addr) {
+                Ok(_) => {}
+                Err(e) => warn!(err=%e, client=%client_addr, server=%server_addr, "tproxy udp writeback error"),
             }
-        });
-    }
+        }
+    });
 
     let mut sessions: HashMap<(SocketAddr, SocketAddr), UdpSessionEntry> = HashMap::new();
     let mut buf = vec![0u8; 65535];
@@ -421,121 +408,27 @@ fn sockaddr_storage_to_socketaddr(ss: &libc::sockaddr_storage) -> anyhow::Result
     }
 }
 
-// ── sendmsg（伪造源地址，用于 TProxy UDP 回包）───────────────────────────────
+// ── tproxy_udp_writeback ──────────────────────────────────────────────────────
 //
-// TProxy UDP 回包必须让客户端看到源地址是原始目标（游戏服务器IP:port），
-// 否则客户端收到源地址不匹配的包会直接丢弃。
-// 实现方式：IP_TRANSPARENT socket + sendmsg + IP_PKTINFO 指定源IP。
+// sing-box 的做法：新建一个 IP_TRANSPARENT socket，bind 到游戏服务器的 IP:port，
+// 然后直接 send_to 客户端。客户端看到的源地址天然就是游戏服务器地址。
+// 参考：sing-box tproxyPacketWriter.WritePacket
 
-fn sendmsg_with_src(
-    fd: RawFd,
+fn tproxy_udp_writeback(
     data: &[u8],
-    dst: SocketAddr,  // 发往客户端的地址
-    src: SocketAddr,  // 伪造的源地址（原始目标，即游戏服务器IP:port）
+    client_addr: SocketAddr,  // 发给谁（客户端）
+    server_addr: SocketAddr,  // bind 到哪（游戏服务器IP:port，作为伪造源地址）
 ) -> std::io::Result<()> {
-    unsafe {
-        match (src, dst) {
-            (SocketAddr::V4(src4), SocketAddr::V4(dst4)) => {
-                // 构造目标地址
-                let dst_sa = libc::sockaddr_in {
-                    sin_family: libc::AF_INET as libc::sa_family_t,
-                    sin_port: dst4.port().to_be(),
-                    sin_addr: libc::in_addr {
-                        s_addr: u32::from(*dst4.ip()).to_be(),
-                    },
-                    sin_zero: [0; 8],
-                };
-
-                // 构造 iovec
-                let mut iov = libc::iovec {
-                    iov_base: data.as_ptr() as *mut libc::c_void,
-                    iov_len: data.len(),
-                };
-
-                // 构造 cmsghdr 携带 IP_PKTINFO（指定源IP）
-                #[repr(C)]
-                struct CmsgPktinfo {
-                    hdr: libc::cmsghdr,
-                    pkt: libc::in_pktinfo,
-                }
-                let mut cmsg: CmsgPktinfo = std::mem::zeroed();
-                cmsg.hdr.cmsg_len = libc::CMSG_LEN(
-                    std::mem::size_of::<libc::in_pktinfo>() as u32
-                ) as _;
-                cmsg.hdr.cmsg_level = libc::IPPROTO_IP;
-                cmsg.hdr.cmsg_type = libc::IP_PKTINFO;
-                cmsg.pkt.ipi_ifindex = 0;
-                cmsg.pkt.ipi_spec_dst = libc::in_addr {
-                    s_addr: u32::from(*src4.ip()).to_be(),
-                };
-                cmsg.pkt.ipi_addr = libc::in_addr { s_addr: 0 };
-
-                let mut msg: libc::msghdr = std::mem::zeroed();
-                msg.msg_name = &dst_sa as *const _ as *mut libc::c_void;
-                msg.msg_namelen = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-                msg.msg_iov = &mut iov;
-                msg.msg_iovlen = 1;
-                msg.msg_control = &mut cmsg as *mut _ as *mut libc::c_void;
-                msg.msg_controllen = std::mem::size_of::<CmsgPktinfo>() as _;
-
-                let n = libc::sendmsg(fd, &msg, 0);
-                if n < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-            }
-            (SocketAddr::V6(src6), SocketAddr::V6(dst6)) => {
-                let dst_sa = libc::sockaddr_in6 {
-                    sin6_family: libc::AF_INET6 as libc::sa_family_t,
-                    sin6_port: dst6.port().to_be(),
-                    sin6_flowinfo: 0,
-                    sin6_addr: libc::in6_addr {
-                        s6_addr: src6.ip().octets(),
-                    },
-                    sin6_scope_id: 0,
-                };
-
-                #[repr(C)]
-                struct CmsgPktinfo6 {
-                    hdr: libc::cmsghdr,
-                    pkt: libc::in6_pktinfo,
-                }
-                let mut cmsg: CmsgPktinfo6 = std::mem::zeroed();
-                cmsg.hdr.cmsg_len = libc::CMSG_LEN(
-                    std::mem::size_of::<libc::in6_pktinfo>() as u32
-                ) as _;
-                cmsg.hdr.cmsg_level = libc::IPPROTO_IPV6;
-                cmsg.hdr.cmsg_type = libc::IPV6_PKTINFO;
-                cmsg.pkt.ipi6_addr = libc::in6_addr {
-                    s6_addr: src6.ip().octets(),
-                };
-                cmsg.pkt.ipi6_ifindex = 0;
-
-                let mut iov = libc::iovec {
-                    iov_base: data.as_ptr() as *mut libc::c_void,
-                    iov_len: data.len(),
-                };
-                let mut msg: libc::msghdr = std::mem::zeroed();
-                msg.msg_name = &dst_sa as *const _ as *mut libc::c_void;
-                msg.msg_namelen = std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
-                msg.msg_iov = &mut iov;
-                msg.msg_iovlen = 1;
-                msg.msg_control = &mut cmsg as *mut _ as *mut libc::c_void;
-                msg.msg_controllen = std::mem::size_of::<CmsgPktinfo6>() as _;
-
-                let n = libc::sendmsg(fd, &msg, 0);
-                if n < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-            }
-            _ => {
-                // IPv4/IPv6 混用，不应发生，降级为普通 send_to
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "src/dst address family mismatch",
-                ));
-            }
-        }
-    }
+    let sock = Socket::new(
+        if server_addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 },
+        Type::DGRAM,
+        Some(Protocol::UDP),
+    )?;
+    sock.set_reuse_address(true)?;
+    sock.set_ip_transparent(true)?;
+    sock.set_nonblocking(false)?;
+    sock.bind(&server_addr.into())?;
+    sock.send_to(data, &client_addr.into())?;
     Ok(())
 }
 
