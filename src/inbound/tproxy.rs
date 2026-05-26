@@ -458,22 +458,17 @@ fn sendmsg_with_src(
                     hdr: libc::cmsghdr,
                     pkt: libc::in_pktinfo,
                 }
-                let mut cmsg = CmsgPktinfo {
-                    hdr: libc::cmsghdr {
-                        cmsg_len: libc::CMSG_LEN(
-                            std::mem::size_of::<libc::in_pktinfo>() as u32
-                        ) as _,
-                        cmsg_level: libc::IPPROTO_IP,
-                        cmsg_type: libc::IP_PKTINFO,
-                    },
-                    pkt: libc::in_pktinfo {
-                        ipi_ifindex: 0, // 让内核选择接口
-                        ipi_spec_dst: libc::in_addr {
-                            s_addr: u32::from(*src4.ip()).to_be(),
-                        },
-                        ipi_addr: libc::in_addr { s_addr: 0 },
-                    },
+                let mut cmsg: CmsgPktinfo = std::mem::zeroed();
+                cmsg.hdr.cmsg_len = libc::CMSG_LEN(
+                    std::mem::size_of::<libc::in_pktinfo>() as u32
+                ) as _;
+                cmsg.hdr.cmsg_level = libc::IPPROTO_IP;
+                cmsg.hdr.cmsg_type = libc::IP_PKTINFO;
+                cmsg.pkt.ipi_ifindex = 0;
+                cmsg.pkt.ipi_spec_dst = libc::in_addr {
+                    s_addr: u32::from(*src4.ip()).to_be(),
                 };
+                cmsg.pkt.ipi_addr = libc::in_addr { s_addr: 0 };
 
                 let mut msg: libc::msghdr = std::mem::zeroed();
                 msg.msg_name = &dst_sa as *const _ as *mut libc::c_void;
@@ -504,21 +499,16 @@ fn sendmsg_with_src(
                     hdr: libc::cmsghdr,
                     pkt: libc::in6_pktinfo,
                 }
-                let mut cmsg = CmsgPktinfo6 {
-                    hdr: libc::cmsghdr {
-                        cmsg_len: libc::CMSG_LEN(
-                            std::mem::size_of::<libc::in6_pktinfo>() as u32
-                        ) as _,
-                        cmsg_level: libc::IPPROTO_IPV6,
-                        cmsg_type: libc::IPV6_PKTINFO,
-                    },
-                    pkt: libc::in6_pktinfo {
-                        ipi6_addr: libc::in6_addr {
-                            s6_addr: src6.ip().octets(),
-                        },
-                        ipi6_ifindex: 0,
-                    },
+                let mut cmsg: CmsgPktinfo6 = std::mem::zeroed();
+                cmsg.hdr.cmsg_len = libc::CMSG_LEN(
+                    std::mem::size_of::<libc::in6_pktinfo>() as u32
+                ) as _;
+                cmsg.hdr.cmsg_level = libc::IPPROTO_IPV6;
+                cmsg.hdr.cmsg_type = libc::IPV6_PKTINFO;
+                cmsg.pkt.ipi6_addr = libc::in6_addr {
+                    s6_addr: src6.ip().octets(),
                 };
+                cmsg.pkt.ipi6_ifindex = 0;
 
                 let mut iov = libc::iovec {
                     iov_base: data.as_ptr() as *mut libc::c_void,

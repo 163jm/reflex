@@ -253,6 +253,7 @@ impl Outbound for VmessOutbound {
         // 回包转发
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
+        let spoofed_src = packet.target.to_socket_addr_lossy();
         let timeout = std::time::Duration::from_secs(10);
         let mut buf = vec![0u8; 65535];
         loop {
@@ -260,7 +261,7 @@ impl Outbound for VmessOutbound {
                 Ok(Ok(0)) | Err(_) => break,
                 Ok(Ok(n)) => {
                     let _ = reply_tx
-                        .send((Bytes::copy_from_slice(&buf[..n]), src))
+                        .send((Bytes::copy_from_slice(&buf[..n]), src, spoofed_src))
                         .await;
                 }
                 Ok(Err(_)) => break,

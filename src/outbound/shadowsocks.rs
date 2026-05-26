@@ -833,6 +833,7 @@ impl Outbound for ShadowsocksOutbound {
         // 接收回包，简单去掉 salt 头后转发
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
+        let spoofed_src = packet.target.to_socket_addr_lossy();
         let salt_len = self.method.salt_len();
         let timeout = std::time::Duration::from_secs(10);
         let mut buf = vec![0u8; 65535];
@@ -841,7 +842,7 @@ impl Outbound for ShadowsocksOutbound {
             match tokio::time::timeout(timeout, udp.recv(&mut buf)).await {
                 Ok(Ok(n)) if n > salt_len + TAG_LEN => {
                     let _ = reply_tx
-                        .send((Bytes::copy_from_slice(&buf[salt_len..n]), src))
+                        .send((Bytes::copy_from_slice(&buf[salt_len..n]), src, spoofed_src))
                         .await;
                 }
                 _ => break,
