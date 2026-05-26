@@ -63,6 +63,7 @@ impl TProxyInbound {
             format!("{}:{}", self.config.listen, self.config.listen_port).parse()?;
         let tag = self.config.tag.clone();
         let net = self.config.network;
+        let routing_mark = self.config.routing_mark;
 
         info!(tag=%tag, addr=%bind, "tproxy inbound starting");
 
@@ -81,7 +82,7 @@ impl TProxyInbound {
             let socket = create_tproxy_udp_socket(bind)?;
             let tx = self.udp_tx.clone();
             let tag = tag.clone();
-            handles.push(tokio::spawn(async move { run_udp(socket, tx, tag).await }));
+            handles.push(tokio::spawn(async move { run_udp(socket, tx, tag, routing_mark).await }));
         }
 
         for h in handles {
@@ -265,6 +266,7 @@ async fn run_udp(
     socket: std::net::UdpSocket,
     tx: mpsc::Sender<InboundUdpPacket>,
     tag: String,
+    routing_mark: u32,
 ) -> anyhow::Result<()> {
     let async_fd = Arc::new(AsyncFd::new(socket)?);
     // (数据, 客户端地址, 伪造源地址=游戏服务器IP:port)
@@ -273,9 +275,11 @@ async fn run_udp(
     // 回包发送循环：照抄 sing-box tproxyPacketWriter 的做法
     // 新建一个 IP_TRANSPARENT socket，bind 到游戏服务器的 IP:port，
     // 然后直接 send_to 客户端——客户端收到的源地址天然就是游戏服务器地址。
+    // 同时必须设置 SO_MARK = routing_mark，否则新 socket 发出的包会被
+    // nftables 的 proxy_out 链再次拦截，导致回包永远发不出去。
     tokio::spawn(async move {
         while let Some((data, client_addr, server_addr)) = global_reply_rx.recv().await {
-            match tproxy_udp_writeback(&data, client_addr, server_addr) {
+            match tproxy_udp_writeback(&data, client_addr, server_addr, routing_mark) {
                 Ok(_) => {}
                 Err(e) => warn!(err=%e, client=%client_addr, server=%server_addr, "tproxy udp writeback error"),
             }
@@ -418,6 +422,7 @@ fn tproxy_udp_writeback(
     data: &[u8],
     client_addr: SocketAddr,  // 发给谁（客户端）
     server_addr: SocketAddr,  // bind 到哪（游戏服务器IP:port，作为伪造源地址）
+    routing_mark: u32,        // SO_MARK，让新 socket 绕过 nftables TProxy 规则
 ) -> std::io::Result<()> {
     let sock = Socket::new(
         if server_addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 },
@@ -427,6 +432,21 @@ fn tproxy_udp_writeback(
     sock.set_reuse_address(true)?;
     sock.set_ip_transparent(true)?;
     sock.set_nonblocking(false)?;
+    // 设置 SO_MARK，让这个 socket 发出的包匹配 nftables proxy_out 里的 GID/mark 豁免规则
+    // 否则新建的 socket 没有 mark，发出的包会被 TProxy 规则再次拦截，回包变成死循环
+    if routing_mark != 0 {
+        unsafe {
+            let fd = sock.as_raw_fd();
+            let mark = routing_mark;
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_MARK,
+                &mark as *const u32 as *const libc::c_void,
+                std::mem::size_of::<u32>() as libc::socklen_t,
+            );
+        }
+    }
     sock.bind(&server_addr.into())?;
     sock.send_to(data, &client_addr.into())?;
     Ok(())

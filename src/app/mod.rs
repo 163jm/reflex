@@ -286,7 +286,11 @@ impl App {
                     #[cfg(target_os = "linux")]
                     {
                         info!(tag=%c.tag, listen=%c.listen, port=%c.listen_port, "starting tproxy inbound");
-                        let inbound = TProxyInbound::new(c.clone(), tcp_tx.clone(), udp_tx.clone());
+                        let mut c = c.clone();
+                        if c.routing_mark == 0 {
+                            c.routing_mark = config.global.routing_mark;
+                        }
+                        let inbound = TProxyInbound::new(c, tcp_tx.clone(), udp_tx.clone());
                         tasks.spawn(async move { inbound.run().await });
                     }
                     #[cfg(not(target_os = "linux"))]

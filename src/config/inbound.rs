@@ -55,6 +55,10 @@ pub struct TProxyInboundConfig {
     /// 支持的网络协议
     #[serde(default)]
     pub network: Network,
+
+    /// SO_MARK，用于 writeback socket 绕过 TProxy 规则，与 global.routing_mark 一致
+    #[serde(default)]
+    pub routing_mark: u32,
 }
 
 // ── Redirect (NAT) ────────────────────────────────────────────────────────────
