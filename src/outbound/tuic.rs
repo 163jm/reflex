@@ -237,11 +237,10 @@ impl Outbound for TuicOutbound {
         Ok(relay(conn.stream, proxy_stream).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, mut packet: InboundUdpPacket) -> anyhow::Result<()> {
         let conn = self.get_conn().await?;
         let session_id = self.udp_session.fetch_add(1, Ordering::Relaxed);
 
-        // 构建 UDP datagram 帧
         let dgram = build_udp_datagram(
             &self.uuid,
             &self.token,
@@ -252,33 +251,58 @@ impl Outbound for TuicOutbound {
             &packet.target,
             &packet.data,
         );
-
         conn.send_datagram(dgram)
             .map_err(|e| anyhow::anyhow!("tuic send datagram: {e}"))?;
-
         debug!(tag = %self.config.tag, target = %packet.target, "tuic udp datagram sent");
 
-        // 接收回包
+        // 若有后续上行包，spawn task 持续发送
+        if let Some(mut upstream_rx) = packet.upstream_rx.take() {
+            let conn_send = conn.clone();
+            let uuid = self.uuid;
+            let token = self.token;
+            let target = packet.target.clone();
+            // 用独立计数器给后续包分配 session_id，起点接着当前值
+            let next_sid = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(
+                self.udp_session.load(Ordering::Relaxed),
+            ));
+            tokio::spawn(async move {
+                while let Some(data) = upstream_rx.recv().await {
+                    let sid = next_sid.fetch_add(1, Ordering::Relaxed);
+                    let dgram = build_udp_datagram(&uuid, &token, sid, 0, 0, 1, &target, &data);
+                    if conn_send.send_datagram(dgram).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
         let spoofed_src = packet.target.to_socket_addr_lossy();
         let timeout = Duration::from_secs(10);
+        let guards = packet.lifetime_guards;
+        let tag = self.config.tag.clone();
 
-        loop {
-            match tokio::time::timeout(timeout, conn.read_datagram()).await {
-                Ok(Ok(data)) => {
-                    // 解析收到的 datagram，提取数据部分
-                    if let Some(payload) = parse_udp_datagram_payload(&data) {
-                        let _ = reply_tx.send((payload, src, spoofed_src)).await;
+        tokio::spawn(async move {
+            loop {
+                match tokio::time::timeout(timeout, conn.read_datagram()).await {
+                    Ok(Ok(data)) => {
+                        if let Some(payload) = parse_udp_datagram_payload(&data) {
+                            if reply_tx.send((payload, src, spoofed_src)).await.is_err() {
+                                break;
+                            }
+                        }
                     }
+                    Ok(Err(e)) => {
+                        warn!(tag = %tag, err = %e, "tuic udp recv error");
+                        break;
+                    }
+                    Err(_) => break, // idle timeout
                 }
-                Ok(Err(e)) => {
-                    warn!(tag = %self.config.tag, err = %e, "tuic udp recv error");
-                    break;
-                }
-                Err(_) => break, // timeout
             }
-        }
+            drop(guards);
+        });
+
         Ok(())
     }
 }

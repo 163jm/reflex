@@ -577,7 +577,7 @@ impl Outbound for Hy2Outbound {
         Ok(relay(conn.stream, hy2_io).await)
     }
 
-    async fn handle_udp(&self, packet: InboundUdpPacket) -> anyhow::Result<()> {
+    async fn handle_udp(&self, mut packet: InboundUdpPacket) -> anyhow::Result<()> {
         let (qconn, auth) = self.get_or_create_connection().await?;
 
         if !auth.udp_enabled {
@@ -587,32 +587,52 @@ impl Outbound for Hy2Outbound {
         let session_id = self.udp_session_id.fetch_add(1, Ordering::Relaxed);
         let addr = target_to_addr_str(&packet.target);
 
-        // 对超过 MAX_DATAGRAM_PAYLOAD 的包进行分片发送
+        // 发送第一个包
         send_udp_fragmented(&qconn, session_id, &addr, &packet.data)?;
+        debug!(tag = %self.config.tag, target = %packet.target, session_id, "hy2 udp datagram sent");
 
-        debug!(
-            tag = %self.config.tag,
-            target = %packet.target,
-            session_id,
-            "hy2 udp datagram sent"
-        );
-
-        let timeout = Duration::from_secs(5);
-        match tokio::time::timeout(timeout, qconn.read_datagram()).await {
-            Ok(Ok(data)) => {
-                // 收到的包可能是分片，需要重组
-                match recv_udp_reassemble(&qconn, data).await {
-                    Ok(Some(payload)) => {
-                        let spoofed_src = packet.target.to_socket_addr_lossy();
-                        let _ = packet.session.reply_tx.send((payload, packet.src, spoofed_src)).await;
+        // 若有后续上行包，spawn task 持续发送
+        if let Some(mut upstream_rx) = packet.upstream_rx.take() {
+            let qconn_send = qconn.clone();
+            let addr_clone = addr.clone();
+            let session_id_up = self.udp_session_id.fetch_add(1, Ordering::Relaxed);
+            tokio::spawn(async move {
+                while let Some(data) = upstream_rx.recv().await {
+                    if send_udp_fragmented(&qconn_send, session_id_up, &addr_clone, &data).is_err() {
+                        break;
                     }
-                    Ok(None) => {} // 分片不完整，已超时丢弃
-                    Err(e) => warn!(err = %e, "hy2 udp reassemble error"),
+                }
+            });
+        }
+
+        // 持续接收回包直到超时
+        let reply_tx = packet.session.reply_tx.clone();
+        let src = packet.src;
+        let spoofed_src = packet.target.to_socket_addr_lossy();
+        let timeout = Duration::from_secs(10);
+        let guards = packet.lifetime_guards;
+
+        tokio::spawn(async move {
+            loop {
+                match tokio::time::timeout(timeout, qconn.read_datagram()).await {
+                    Ok(Ok(data)) => {
+                        match recv_udp_reassemble(&qconn, data).await {
+                            Ok(Some(payload)) => {
+                                if reply_tx.send((payload, src, spoofed_src)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => { warn!(err = %e, "hy2 udp reassemble error"); break; }
+                        }
+                    }
+                    Ok(Err(e)) => { warn!(err = %e, "hy2 udp recv error"); break; }
+                    Err(_) => break, // idle timeout
                 }
             }
-            Ok(Err(e)) => warn!(err = %e, "hy2 udp recv error"),
-            Err(_) => {} // timeout
-        }
+            drop(guards);
+        });
+
         Ok(())
     }
 }
