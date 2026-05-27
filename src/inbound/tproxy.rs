@@ -309,7 +309,7 @@ async fn run_udp(
                 loop {
                     let (n, src, dst) = match recvmsg_with_dst(fd, &mut buf) {
                         Ok(v) => v,
-                        Err(e) if e.to_string().contains("EAGAIN") || e.to_string().contains("WouldBlock") => {
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             // 缓冲区已清空，清除 ready 标记，等待下次 epoll 事件
                             guard.clear_ready();
                             break;
@@ -367,7 +367,7 @@ async fn run_udp(
 
 // ── recvmsg（同步，在 readable 回调里调用）────────────────────────────────────
 
-fn recvmsg_with_dst(fd: RawFd, buf: &mut [u8]) -> anyhow::Result<(usize, SocketAddr, SocketAddr)> {
+fn recvmsg_with_dst(fd: RawFd, buf: &mut [u8]) -> Result<(usize, SocketAddr, SocketAddr), std::io::Error> {
     const CMSG_SPACE: usize = 128;
     let mut cmsg_buf = [0u8; CMSG_SPACE];
     let mut src_storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
@@ -386,12 +386,13 @@ fn recvmsg_with_dst(fd: RawFd, buf: &mut [u8]) -> anyhow::Result<(usize, SocketA
 
     let n = unsafe { libc::recvmsg(fd, &mut msg, 0) };
     if n < 0 {
-        let e = std::io::Error::last_os_error();
-        return Err(e.into());
+        return Err(std::io::Error::last_os_error());
     }
 
-    let src = sockaddr_storage_to_socketaddr(&src_storage)?;
-    let dst = extract_original_dst_from_cmsg(&msg)?;
+    let src = sockaddr_storage_to_socketaddr(&src_storage)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let dst = extract_original_dst_from_cmsg(&msg)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     Ok((n as usize, src, dst))
 }
 
