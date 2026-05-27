@@ -268,6 +268,8 @@ async fn run_udp(
     tag: String,
     routing_mark: u32,
 ) -> anyhow::Result<()> {
+    let local_addr = socket.local_addr()?;
+    info!(tag=%tag, addr=%local_addr, routing_mark=%routing_mark, "tproxy udp listener started");
     let async_fd = Arc::new(AsyncFd::new(socket)?);
     // (数据, 客户端地址, 伪造源地址=游戏服务器IP:port)
     let (global_reply_tx, mut global_reply_rx) = mpsc::channel::<(Bytes, SocketAddr, SocketAddr)>(256);
@@ -302,53 +304,56 @@ async fn run_udp(
             readable = async_fd.readable() => {
                 let mut guard = readable?;
 
-                let (n, src, dst) = match recvmsg_with_dst(fd, &mut buf) {
-                    Ok(v) => v,
-                    Err(e) if e.to_string().contains("EAGAIN") || e.to_string().contains("WouldBlock") => {
-                        guard.clear_ready();
-                        continue;
+                // edge-trigger 模式：必须循环读到 EAGAIN，否则缓冲区里剩余的包
+                // 不会再触发 epoll 事件，导致这些包被永久丢弃。
+                loop {
+                    let (n, src, dst) = match recvmsg_with_dst(fd, &mut buf) {
+                        Ok(v) => v,
+                        Err(e) if e.to_string().contains("EAGAIN") || e.to_string().contains("WouldBlock") => {
+                            // 缓冲区已清空，清除 ready 标记，等待下次 epoll 事件
+                            guard.clear_ready();
+                            break;
+                        }
+                        Err(e) => {
+                            error!(err=%e, "tproxy udp recvmsg error");
+                            guard.clear_ready();
+                            break;
+                        }
+                    };
+
+                    let data = Bytes::copy_from_slice(&buf[..n]);
+                    let timeout = tproxy_udp_timeout_for_port(dst.port());
+
+                    let key = (src, dst);
+                    let entry = sessions.entry(key).or_insert_with(|| {
+                        debug!(src=%src, dst=%dst, "tproxy udp new session");
+                        UdpSessionEntry {
+                            reply_tx: global_reply_tx.clone(),
+                            last_seen: Instant::now(),
+                            timeout,
+                        }
+                    });
+                    entry.last_seen = Instant::now();
+
+                    let session = UdpSession {
+                        reply_tx: entry.reply_tx.clone(),
+                    };
+                    let packet = InboundUdpPacket {
+                        data,
+                        src,
+                        target: Target::Socket(dst),
+                        inbound_tag: tag.clone(),
+                        session,
+                        sniffed_protocol: None,
+                        sniffed_domain: None,
+                        upstream_rx: None,
+                        lifetime_guards: vec![],
+                    };
+
+                    if tx.send(packet).await.is_err() {
+                        return Ok(());
                     }
-                    Err(e) => {
-                        error!(err=%e, "tproxy udp recvmsg error");
-                        guard.clear_ready();
-                        continue;
-                    }
-                };
-                guard.clear_ready();
-
-                let data = Bytes::copy_from_slice(&buf[..n]);
-                let timeout = tproxy_udp_timeout_for_port(dst.port());
-
-                let key = (src, dst);
-                let entry = sessions.entry(key).or_insert_with(|| {
-                    debug!(src=%src, dst=%dst, "tproxy udp new session");
-                    UdpSessionEntry {
-                        reply_tx: global_reply_tx.clone(),
-                        last_seen: Instant::now(),
-                        timeout,
-                    }
-                });
-                entry.last_seen = Instant::now();
-
-                let session = UdpSession {
-                    reply_tx: entry.reply_tx.clone(),
-                };
-                let packet = InboundUdpPacket {
-                    data,
-                    src,
-                    target: Target::Socket(dst),
-                    inbound_tag: tag.clone(),
-                    session,
-                    sniffed_protocol: None,
-                    sniffed_domain: None,
-                    upstream_rx: None,
-                    lifetime_guards: vec![],
-                };
-
-                if tx.send(packet).await.is_err() {
-                    break;
                 }
-            }
 
             _ = gc_ticker.tick() => {
                 // 按每个会话自身的超时清理，而不是全局固定 60 s
