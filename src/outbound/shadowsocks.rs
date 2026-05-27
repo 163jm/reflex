@@ -804,21 +804,17 @@ impl Outbound for ShadowsocksOutbound {
         debug!(tag = %self.config.tag, target = %packet.target, "shadowsocks udp relay");
 
         let server_addr = self.server_addr().await?;
-        let local_bind = if server_addr.is_ipv6() {
-            "[::]:0"
-        } else {
-            "0.0.0.0:0"
-        };
+        let local_bind = if server_addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
         let udp = std::sync::Arc::new(UdpSocket::bind(local_bind).await?);
         apply_mark_to_udp(&udp, self.routing_mark)?;
         udp.connect(server_addr).await?;
 
-        // 构建并发送加密 UDP 包：[salt][enc(addr+payload)+tag]
-        let send_packet = |data: &[u8]| -> anyhow::Result<Vec<u8>> {
+        // 发送第一个上行包（内联加密，避免 closure 持有 &self）
+        {
             let mut addr_payload = encode_target(&packet.target);
-            addr_payload.extend_from_slice(data);
-            if self.method == Method::None {
-                Ok(addr_payload)
+            addr_payload.extend_from_slice(&packet.data);
+            let wire = if self.method == Method::None {
+                addr_payload
             } else {
                 let salt = self.random_salt();
                 let subkey = self.derive_subkey(&salt);
@@ -826,12 +822,10 @@ impl Outbound for ShadowsocksOutbound {
                 cipher.seal(&mut addr_payload)?;
                 let mut pkt = salt;
                 pkt.extend_from_slice(&addr_payload);
-                Ok(pkt)
-            }
-        };
-
-        let wire = send_packet(&packet.data)?;
-        udp.send(&wire).await?;
+                pkt
+            };
+            udp.send(&wire).await?;
+        }
 
         // 若有后续上行包，spawn task 持续加密发送
         if let Some(mut upstream_rx) = packet.upstream_rx.take() {
@@ -847,7 +841,6 @@ impl Outbound for ShadowsocksOutbound {
                     let wire = if method == Method::None {
                         addr_payload
                     } else {
-                        // 复用与 random_salt / derive_subkey 相同的逻辑
                         let mut salt = vec![0u8; method.salt_len()];
                         rand::thread_rng().fill_bytes(&mut salt);
                         let key_len = method.key_len();
@@ -871,7 +864,7 @@ impl Outbound for ShadowsocksOutbound {
             });
         }
 
-        // 持续接收回包（游戏服务器持续推送）
+        // 持续接收回包
         let reply_tx = packet.session.reply_tx.clone();
         let src = packet.src;
         let spoofed_src = packet.target.to_socket_addr_lossy();
@@ -891,3 +884,4 @@ impl Outbound for ShadowsocksOutbound {
         }
         Ok(())
     }
+}
