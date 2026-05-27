@@ -375,6 +375,41 @@ impl DnsResolver {
             .map(|r| (r.upstream.clone(), r.disable_cache))
             .unwrap_or_else(|| (self.default.clone(), false));
 
+        // ── fakeip 只处理 A(1) / AAAA(28) 查询 ──────────────────────────────
+        // systemd-resolved 等客户端会同时发送 HTTPS(65) 记录查询；若命中 fakeip
+        // 规则，fakeip upstream 会返回空 NOERROR，导致客户端拿不到 ECH/ALPN 信息
+        // 并报 DNS 超时错误（127.0.0.53 等不到合法上游应答）。
+        // 修复：非 A/AAAA 查询命中 fakeip upstream 时，fallback 到真实 upstream，
+        // 与 sing-box allowFakeIP / isAddressQuery 逻辑对齐。
+        let (upstream, disable_cache) =
+            if qtype != 1 && qtype != 28
+                && matches!(upstream.kind, upstream::UpstreamKind::FakeIp { .. })
+            {
+                debug!(
+                    qname = %qname,
+                    qtype = qtype,
+                    "fakeip upstream selected for non-address query, falling back to real upstream"
+                );
+                self.rules
+                    .iter()
+                    .find(|r| {
+                        r.matches(inbound_tag, &qname, qtype)
+                            && !matches!(r.upstream.kind, upstream::UpstreamKind::FakeIp { .. })
+                    })
+                    .map(|r| (r.upstream.clone(), r.disable_cache))
+                    .unwrap_or_else(|| {
+                        let up = self
+                            .upstreams
+                            .values()
+                            .find(|u| !matches!(u.kind, upstream::UpstreamKind::FakeIp { .. }))
+                            .cloned()
+                            .unwrap_or_else(|| self.default.clone());
+                        (up, false)
+                    })
+            } else {
+                (upstream, disable_cache)
+            };
+
         let transport_tag = upstream.tag.clone();
 
         // ── 查缓存 ────────────────────────────────────────────────────────────
