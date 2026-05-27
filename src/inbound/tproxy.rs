@@ -354,6 +354,7 @@ async fn run_udp(
                         return Ok(());
                     }
                 }
+            }
 
             _ = gc_ticker.tick() => {
                 // 按每个会话自身的超时清理，而不是全局固定 60 s
