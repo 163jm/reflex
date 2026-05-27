@@ -63,6 +63,7 @@ fn make_udp_packet(target: Target, inbound_tag: &str) -> InboundUdpPacket {
         sniffed_protocol: None,
         sniffed_domain: None,
         session: UdpSession { reply_tx: tx },
+        upstream_rx: None,
     }
 }
 
