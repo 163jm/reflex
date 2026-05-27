@@ -512,53 +512,46 @@ async fn run_udp_session(
     // 将 data_rx（后续上行包通道）塞进第一个包，让出站实现在内部持续转发。
     // 这样 direct 出站只创建一个 socket（固定源端口），游戏服务器不会因为源端口
     // 变化而断连。代理出站若不理会 upstream_rx，则退化为只处理一个包的旧行为（兼容）。
-    loop {
-        let data = tokio::time::timeout(timeout, data_rx.recv()).await;
-        match data {
-            Ok(Some(first_payload)) => {
-                let up_bytes = first_payload.len() as i64;
-                // 用包装过的 reply_tx 统计下行字节
-                let live_down_clone = live_down.clone();
-                let (counting_tx, mut counting_rx) = mpsc::channel::<(bytes::Bytes, SocketAddr, SocketAddr)>(64);
-                let real_reply_tx = reply_tx.clone();
-                tokio::spawn(async move {
-                    use std::sync::atomic::Ordering;
-                    while let Some((data, addr, spoofed_src)) = counting_rx.recv().await {
-                        let down_bytes = data.len() as i64;
-                        live_down_clone.fetch_add(down_bytes, Ordering::Relaxed);
-                        let _ = real_reply_tx.send((data, addr, spoofed_src)).await;
-                    }
-                });
-                let packet = InboundUdpPacket {
-                    data: first_payload,
-                    src,
-                    target: target.clone(),
-                    inbound_tag: inbound_tag.clone(),
-                    session: UdpSession {
-                        reply_tx: counting_tx,
-                    },
-                    sniffed_protocol: None,
-                    sniffed_domain: None,
-                    // 把剩余上行包通道交给出站，让它用同一个 socket 持续发包
-                    upstream_rx: Some(data_rx),
-                };
-                if let Err(e) = ob.handle_udp(packet).await {
-                    debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
-                }
+    match tokio::time::timeout(timeout, data_rx.recv()).await {
+        Ok(Some(first_payload)) => {
+            let up_bytes = first_payload.len() as i64;
+            // 用包装过的 reply_tx 统计下行字节
+            let live_down_clone = live_down.clone();
+            let (counting_tx, mut counting_rx) = mpsc::channel::<(bytes::Bytes, SocketAddr, SocketAddr)>(64);
+            let real_reply_tx = reply_tx.clone();
+            tokio::spawn(async move {
                 use std::sync::atomic::Ordering;
-                live_up.fetch_add(up_bytes, Ordering::Relaxed);
-                _guard.add_bytes(up_bytes as u64, 0);
-                // handle_udp 已接管 data_rx，session 生命周期由出站管理，此处退出
-                break;
+                while let Some((data, addr, spoofed_src)) = counting_rx.recv().await {
+                    let down_bytes = data.len() as i64;
+                    live_down_clone.fetch_add(down_bytes, Ordering::Relaxed);
+                    let _ = real_reply_tx.send((data, addr, spoofed_src)).await;
+                }
+            });
+            let packet = InboundUdpPacket {
+                data: first_payload,
+                src,
+                target: target.clone(),
+                inbound_tag: inbound_tag.clone(),
+                session: UdpSession {
+                    reply_tx: counting_tx,
+                },
+                sniffed_protocol: None,
+                sniffed_domain: None,
+                // 把剩余上行包通道交给出站，让它用同一个 socket 持续发包
+                upstream_rx: Some(data_rx),
+            };
+            if let Err(e) = ob.handle_udp(packet).await {
+                debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
             }
-            Ok(None) => {
-                debug!(src=%src, dst=%target, "udp session: data_rx closed");
-                break;
-            }
-            Err(_) => {
-                debug!(src=%src, dst=%target, outbound=%outbound_tag, timeout=?timeout, "udp session: idle timeout");
-                break;
-            }
+            use std::sync::atomic::Ordering;
+            live_up.fetch_add(up_bytes, Ordering::Relaxed);
+            _guard.add_bytes(up_bytes as u64, 0);
+        }
+        Ok(None) => {
+            debug!(src=%src, dst=%target, "udp session: data_rx closed");
+        }
+        Err(_) => {
+            debug!(src=%src, dst=%target, outbound=%outbound_tag, timeout=?timeout, "udp session: idle timeout");
         }
     }
 
