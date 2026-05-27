@@ -342,6 +342,7 @@ async fn run_udp(
                     sniffed_protocol: None,
                     sniffed_domain: None,
                     upstream_rx: None,
+                    lifetime_guards: vec![],
                 };
 
                 if tx.send(packet).await.is_err() {

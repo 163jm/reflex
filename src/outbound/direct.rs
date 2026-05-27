@@ -169,11 +169,9 @@ impl Outbound for DirectOutbound {
         let tag = self.config.tag.clone();
 
         // 取出后续上行包通道（由 run_udp_session 注入）
-        let mut upstream_rx = packet.upstream_rx.take();
-
         // Task 1：持续从 upstream_rx 接收后续上行包，用同一个 socket 发出
         // 这保证整个游戏会话共用一个本地源端口
-        if let Some(mut rx) = upstream_rx.take() {
+        if let Some(mut rx) = packet.upstream_rx.take() {
             let sock_send = sock.clone();
             tokio::spawn(async move {
                 while let Some(data) = rx.recv().await {
@@ -187,7 +185,9 @@ impl Outbound for DirectOutbound {
 
         // Task 2：持续从游戏服务器接收回包，转发给客户端（tproxy writeback）
         // 5 秒无包后退出，此时 socket 销毁，会话结束
+        // lifetime_guards 持有 ConnGuard / UdpGuard，确保连接在 clash API 中保持可见
         let sock_recv = sock;
+        let guards = packet.lifetime_guards;
         tokio::spawn(async move {
             let mut buf = vec![0u8; 65535];
             loop {
@@ -195,7 +195,7 @@ impl Outbound for DirectOutbound {
                     break;
                 }
                 match tokio::time::timeout(
-                    tokio::time::Duration::from_secs(5),
+                    tokio::time::Duration::from_secs(30),
                     sock_recv.recv_from(&mut buf),
                 )
                 .await
@@ -212,12 +212,13 @@ impl Outbound for DirectOutbound {
                         break;
                     }
                     Err(_) => {
-                        // 5 秒内无回包，退出收包循环（会话空闲超时）
-                        debug!(tag=%tag, dst=%dst, "direct udp: idle timeout (5s), closing recv loop");
+                        // 30 秒内无回包，退出收包循环（会话空闲超时）
+                        debug!(tag=%tag, dst=%dst, "direct udp: idle timeout (30s), closing recv loop");
                         break;
                     }
                 }
             }
+            drop(guards); // 这里 drop guards，连接从 clash API 中消失
         });
 
         Ok(())

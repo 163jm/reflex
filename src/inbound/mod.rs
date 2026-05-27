@@ -176,6 +176,9 @@ pub struct InboundUdpPacket {
     /// 出站实现收到后应持续从此通道读取并发往服务端，直到通道关闭或超时。
     /// 这保证整个会话共用同一个出站 socket（固定源端口），游戏协议要求此行为。
     pub upstream_rx: Option<tokio::sync::mpsc::Receiver<bytes::Bytes>>,
+    /// 需要与会话生命周期绑定的守卫对象（ConnGuard / UdpGuard 等）。
+    /// 出站实现应将此字段 move 进持久 task，确保连接在 clash API 中保持可见。
+    pub lifetime_guards: Vec<Box<dyn std::any::Any + Send>>,
 }
 
 /// 连接目标：域名或 IP

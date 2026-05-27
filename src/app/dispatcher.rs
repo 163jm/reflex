@@ -537,15 +537,21 @@ async fn run_udp_session(
                 },
                 sniffed_protocol: None,
                 sniffed_domain: None,
-                // 把剩余上行包通道交给出站，让它用同一个 socket 持续发包
                 upstream_rx: Some(data_rx),
+                // 把 conn_guard 和 _guard 移进 packet，让出站持久 task 持有它们，
+                // 确保连接在 clash API 中保持可见，直到 socket 真正关闭。
+                lifetime_guards: vec![
+                    Box::new(conn_guard),
+                    Box::new(_guard),
+                ],
             };
             if let Err(e) = ob.handle_udp(packet).await {
                 debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
             }
             use std::sync::atomic::Ordering;
             live_up.fetch_add(up_bytes, Ordering::Relaxed);
-            _guard.add_bytes(up_bytes as u64, 0);
+            // _guard 已经 move 进 packet，不能在这里 add_bytes。
+            // 上行字节统计改由 live_up 原子计数器承担（已在上方 fetch_add）。
         }
         Ok(None) => {
             debug!(src=%src, dst=%target, "udp session: data_rx closed");
@@ -554,9 +560,6 @@ async fn run_udp_session(
             debug!(src=%src, dst=%target, outbound=%outbound_tag, timeout=?timeout, "udp session: idle timeout");
         }
     }
-
-    drop(conn_guard);
-    // DNS 出站路径不走此函数，此处直接 drop _guard
 }
 
 // ── TCP 分发 ──────────────────────────────────────────────────────────────────
