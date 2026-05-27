@@ -871,12 +871,14 @@ pub fn make_refused(query: &[u8]) -> Bytes {
 
 pub fn make_noerror_empty(query: &[u8]) -> Bytes {
     let mut v = make_servfail(query).to_vec();
+    v[2] |= 0x04; // AA=1：权威应答，让 systemd-resolved 等客户端接受空响应为最终结果
     v[3] = 0x00;
     Bytes::from(v)
 }
 
 pub fn make_nxdomain(query: &[u8]) -> Bytes {
     let mut v = make_servfail(query).to_vec();
+    v[2] |= 0x04; // AA=1
     v[3] = 0x03;
     Bytes::from(v)
 }
