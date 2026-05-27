@@ -384,24 +384,19 @@ impl SocksOutbound {
         let src = packet.src;
         let spoofed_src = packet.target.to_socket_addr_lossy();
 
-        loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                udp.recv_from(&mut buf),
-            )
-            .await
-            {
-                Ok(Ok((n, _from))) => {
-                    match socks5_udp_strip_header(&buf[..n]) {
-                        Ok(payload) => {
-                            let _ = reply_tx
-                                .send((bytes::Bytes::copy_from_slice(payload), src, spoofed_src))
-                                .await;
-                        }
-                        Err(_) => continue,
-                    }
+        while let Ok(Ok((n, _from))) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            udp.recv_from(&mut buf),
+        )
+        .await
+        {
+            match socks5_udp_strip_header(&buf[..n]) {
+                Ok(payload) => {
+                    let _ = reply_tx
+                        .send((bytes::Bytes::copy_from_slice(payload), src, spoofed_src))
+                        .await;
                 }
-                _ => break,
+                Err(_) => continue,
             }
         }
 
