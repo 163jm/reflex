@@ -390,9 +390,9 @@ fn recvmsg_with_dst(fd: RawFd, buf: &mut [u8]) -> Result<(usize, SocketAddr, Soc
     }
 
     let src = sockaddr_storage_to_socketaddr(&src_storage)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     let dst = extract_original_dst_from_cmsg(&msg)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     Ok((n as usize, src, dst))
 }
 
