@@ -451,11 +451,8 @@ impl CompiledRule {
             ("DOMAIN-KEYWORD".to_string(), rule.domain_keyword.join(","))
         } else if !rule.ip_cidr.is_empty() {
             ("IP-CIDR".to_string(), rule.ip_cidr.join(","))
-        } else if rule.network.is_some() {
-            (
-                "NETWORK".to_string(),
-                format!("{:?}", rule.network.unwrap()).to_ascii_lowercase(),
-            )
+        } else if let Some(nf) = rule.network {
+            ("NETWORK".to_string(), format!("{nf:?}").to_ascii_lowercase())
         } else if !rule.protocol.is_empty() {
             ("PROTOCOL".to_string(), rule.protocol.join(","))
         } else if !rule.inbound.is_empty() {
