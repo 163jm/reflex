@@ -170,6 +170,7 @@ jobs:
           cat artifacts/**/*.sha256 > checksums.txt
           echo "=== checksums.txt ==="
           cat checksums.txt
+          cp config.example.json artifacts/config.json
 
       - name: Delete existing pre-releases and their tags
         env:
@@ -202,8 +203,4 @@ jobs:
             artifacts/reflex-linux-aarch64/reflex-linux-aarch64
             artifacts/reflex-linux-x86_64/reflex-linux-x86_64
             artifacts/reflex-windows-x86_64/reflex-windows-x86_64.exe
-            checksums.txt
-
-      - name: Release URL
-        run: |
-          echo "::notice::Release created: ${{ steps.create_release.outputs.url }}"
+            artifacts/config.json
