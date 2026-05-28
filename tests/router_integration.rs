@@ -36,6 +36,7 @@ fn empty_rule(outbound: &str) -> RouteRuleConfig {
         sniff_override_destination: false,
         resolve: false,
         resolve_server: None,
+        private_ip: false,
         hijack_dns: false,
     }
 }
