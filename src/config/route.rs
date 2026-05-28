@@ -116,6 +116,26 @@ pub struct RouteRuleConfig {
     #[serde(default, rename = "server")]
     pub resolve_server: Option<String>,
 
+    // ── 私有 IP 快捷方式 ──────────────────────────────────────
+    /// 目标 IP 属于私有/保留地址时命中，并自动直连（无需填写 `outbound`）。
+    ///
+    /// 覆盖范围：
+    /// - `127.0.0.0/8`、`::1/128`（回环）
+    /// - `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`（RFC 1918）
+    /// - `169.254.0.0/16`、`fe80::/10`（链路本地）
+    /// - `fc00::/7`（IPv6 ULA）
+    /// - `100.64.0.0/10`（共享地址空间，RFC 6598）
+    /// - `0.0.0.0/8`（本机网络）
+    ///
+    /// 典型用法：
+    /// ```json
+    /// { "private_ip": true }
+    /// ```
+    /// 等价于手动列出所有私有 `ip_cidr` + `"outbound": "direct"`，但更简洁。
+    /// `outbound` 字段在此规则中被忽略，动作固定为直连。
+    #[serde(default)]
+    pub private_ip: bool,
+
     // ── DNS 劫持 ──────────────────────────────────────────────
     /// 将本规则的动作设为 hijack-dns（等价于 sing-box 的 `"action": "hijack-dns"`）。
     ///
@@ -150,6 +170,7 @@ impl RouteRuleConfig {
             || !self.ip_cidr.is_empty()
             || !self.port.is_empty()
             || !self.port_range.is_empty()
+            || self.private_ip
     }
 }
 
@@ -342,6 +363,7 @@ mod tests {
             sniff_override_destination: false,
             resolve: false,
             resolve_server: None,
+            private_ip: false,
             hijack_dns: false,
             outbound: "direct".into(),
         };
@@ -353,6 +375,13 @@ mod tests {
             ..empty.clone()
         };
         assert!(!hijack_only.has_conditions());
+
+        // private_ip=true 本身就是条件
+        let with_private_ip = RouteRuleConfig {
+            private_ip: true,
+            ..empty.clone()
+        };
+        assert!(with_private_ip.has_conditions());
 
         let with_ruleset = RouteRuleConfig {
             ruleset: vec!["geosite-cn".into()],

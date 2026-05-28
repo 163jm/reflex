@@ -159,6 +159,29 @@ impl App {
             outbound_mgr.len()
         );
 
+        // ── 校验：路由规则引用的 outbound tag 必须已注册 ──────────────────────
+        // sniff/resolve/hijack_dns/private_ip 规则不依赖 outbound tag，跳过。
+        // final 字段也需要检查。
+        {
+            for (i, rule) in config.route.rules.iter().enumerate() {
+                if rule.sniff || rule.resolve || rule.hijack_dns || rule.private_ip {
+                    continue;
+                }
+                let tag = &rule.outbound;
+                if !tag.is_empty() && tag != "dns-out" && outbound_mgr.get(tag).is_none() {
+                    anyhow::bail!(
+                        "route rule[{i}]: outbound tag \"{tag}\" is not defined in outbounds"
+                    );
+                }
+            }
+            let final_tag = &config.route.r#final;
+            if final_tag != "dns-out" && outbound_mgr.get(final_tag).is_none() {
+                anyhow::bail!(
+                    "route.final: outbound tag \"{final_tag}\" is not defined in outbounds"
+                );
+            }
+        }
+
         // ── provider 节点变更监听 + health_check ─────────────────────────────
         if let Some(ref pmgr) = provider_manager {
             // 为每个 selector/urltest outbound 启动 provider 变更监听

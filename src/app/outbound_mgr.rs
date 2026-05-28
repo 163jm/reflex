@@ -120,6 +120,23 @@ impl OutboundManager {
             map.insert(tag, ob);
         }
 
+        // ── 内置 "direct" 保底 ──────────────────────────────────────────────
+        // 如果用户没有在 outbounds 里声明 tag = "direct" 的出站，
+        // 自动插入一个零配置的直连实例，使 `private_ip: true` 等内部路由
+        // 不依赖用户显式声明即可正常工作。
+        // 若用户自己声明了同名 tag，上面的循环已经插入，此处不覆盖。
+        map.entry("direct".to_string()).or_insert_with(|| {
+            let cfg = crate::config::outbound::DirectOutboundConfig {
+                tag: "direct".to_string(),
+                bind_address: None,
+            };
+            if let Some(ref r) = resolver {
+                Arc::new(DirectOutbound::with_resolver(cfg, r.clone()).with_mark(routing_mark))
+            } else {
+                Arc::new(DirectOutbound::new(cfg).with_mark(routing_mark))
+            }
+        });
+
         registry
             .set(map.clone())
             .map_err(|_| anyhow::anyhow!("outbound registry already initialized"))?;

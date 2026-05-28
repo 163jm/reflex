@@ -345,6 +345,8 @@ struct CompiledRule {
     rulesets: Vec<Arc<RuleSet>>,
     addr_rs: Option<Arc<RuleSet>>,
     port_rs: Option<Arc<RuleSet>>,
+    /// 是否启用私有 IP 直连匹配
+    private_ip: bool,
     action: RouteAction,
     rule_display: (String, String),
 }
@@ -425,11 +427,21 @@ impl CompiledRule {
             }
         } else if rule.hijack_dns {
             RouteAction::DnsOut
+        } else if rule.private_ip {
+            // private_ip=true 时动作固定为直连，忽略 outbound 字段
+            RouteAction::Outbound("direct".to_string())
         } else {
             to_action(&rule.outbound)
         };
 
-        let rule_display = if !rule.ruleset.is_empty() {
+        let rule_display = if rule.private_ip && rule.ruleset.is_empty()
+            && rule.domain.is_empty()
+            && rule.domain_suffix.is_empty()
+            && rule.domain_keyword.is_empty()
+            && rule.ip_cidr.is_empty()
+        {
+            ("PRIVATE-IP".to_string(), String::new())
+        } else if !rule.ruleset.is_empty() {
             ("rule-set".to_string(), rule.ruleset.join(","))
         } else if !rule.domain.is_empty() {
             ("DOMAIN".to_string(), rule.domain.join(","))
@@ -465,6 +477,7 @@ impl CompiledRule {
             rulesets: compiled_rulesets,
             addr_rs,
             port_rs,
+            private_ip: rule.private_ip,
             action,
             rule_display,
         })
@@ -505,10 +518,17 @@ impl CompiledRule {
             }
         }
 
-        // 4. 目标条件
-        let has_any = !self.rulesets.is_empty() || self.addr_rs.is_some() || self.port_rs.is_some();
-        if has_any && !self.match_target(target) {
-            return false;
+        // 4. 目标条件（所有地址类条件之间是 OR）
+        //    - ruleset / ip_cidr / domain* / port  →  match_target()
+        //    - private_ip                           →  is_private_ip()
+        let has_addr_rules =
+            !self.rulesets.is_empty() || self.addr_rs.is_some() || self.port_rs.is_some();
+        if has_addr_rules || self.private_ip {
+            let addr_hit = has_addr_rules && self.match_target(target);
+            let private_hit = self.private_ip && matches!(target, Target::Socket(addr) if is_private_ip(addr.ip()));
+            if !addr_hit && !private_hit {
+                return false;
+            }
         }
 
         true
@@ -557,6 +577,46 @@ fn to_action(outbound: &str) -> RouteAction {
         RouteAction::DnsOut
     } else {
         RouteAction::Outbound(outbound.to_string())
+    }
+}
+
+/// 判断一个 IP 地址是否属于私有/保留地址空间。
+///
+/// 覆盖范围（与 sing-box `ip_is_private` 对齐）：
+/// - 回环：`127.0.0.0/8`，`::1/128`
+/// - RFC 1918：`10.0.0.0/8`，`172.16.0.0/12`，`192.168.0.0/16`
+/// - 链路本地：`169.254.0.0/16`，`fe80::/10`
+/// - IPv6 ULA：`fc00::/7`
+/// - 共享地址空间（RFC 6598）：`100.64.0.0/10`
+/// - 本机网络：`0.0.0.0/8`
+fn is_private_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // 0.0.0.0/8
+            o[0] == 0
+            // 10.0.0.0/8
+            || o[0] == 10
+            // 100.64.0.0/10
+            || (o[0] == 100 && (o[1] & 0xc0) == 64)
+            // 127.0.0.0/8
+            || o[0] == 127
+            // 169.254.0.0/16
+            || (o[0] == 169 && o[1] == 254)
+            // 172.16.0.0/12
+            || (o[0] == 172 && (o[1] & 0xf0) == 16)
+            // 192.168.0.0/16
+            || (o[0] == 192 && o[1] == 168)
+        }
+        std::net::IpAddr::V6(v6) => {
+            let segs = v6.segments();
+            // ::1/128
+            v6.is_loopback()
+            // fe80::/10（链路本地）
+            || (segs[0] & 0xffc0) == 0xfe80
+            // fc00::/7（ULA）
+            || (segs[0] & 0xfe00) == 0xfc00
+        }
     }
 }
 
@@ -767,6 +827,7 @@ mod tests {
             sniff_override_destination: false,
             resolve: false,
             resolve_server: None,
+            private_ip: false,
             hijack_dns: false,
             outbound: outbound.into(),
         }
@@ -1090,9 +1151,148 @@ mod tests {
         );
         assert_eq!(action, &RouteAction::Outbound("direct".into()));
     }
+
+    // ── private_ip 测试 ───────────────────────────────────────────────────
+
+    #[test]
+    fn private_ip_matches_rfc1918() {
+        let rule = RouteRuleConfig {
+            private_ip: true,
+            ..Default::default()
+        };
+        let r = make_router(vec![rule], "proxy");
+
+        // RFC 1918 地址应命中
+        for ip in ["10.0.0.1:80", "172.16.0.1:80", "192.168.1.1:80"] {
+            assert_eq!(
+                r.route(
+                    "in",
+                    Some(NetworkKind::Tcp),
+                    &Target::Socket(ip.parse().unwrap()),
+                    None
+                )
+                .0,
+                &RouteAction::Outbound("direct".into()),
+                "should match private IP: {ip}"
+            );
+        }
+
+        // 公网地址不命中
+        for ip in ["8.8.8.8:53", "1.1.1.1:443", "114.114.114.114:53"] {
+            assert_eq!(
+                r.route(
+                    "in",
+                    Some(NetworkKind::Tcp),
+                    &Target::Socket(ip.parse().unwrap()),
+                    None
+                )
+                .0,
+                &RouteAction::Outbound("proxy".into()),
+                "should not match public IP: {ip}"
+            );
+        }
+    }
+
+    #[test]
+    fn private_ip_covers_loopback_and_link_local() {
+        let rule = RouteRuleConfig {
+            private_ip: true,
+            ..Default::default()
+        };
+        let r = make_router(vec![rule], "proxy");
+
+        for ip in ["127.0.0.1:80", "169.254.1.1:80"] {
+            assert_eq!(
+                r.route(
+                    "in",
+                    Some(NetworkKind::Tcp),
+                    &Target::Socket(ip.parse().unwrap()),
+                    None
+                )
+                .0,
+                &RouteAction::Outbound("direct".into()),
+                "should match: {ip}"
+            );
+        }
+    }
+
+    #[test]
+    fn private_ip_does_not_match_domain_target() {
+        // private_ip 只检查 IP 目标，域名目标不匹配
+        let rule = RouteRuleConfig {
+            private_ip: true,
+            ..Default::default()
+        };
+        let r = make_router(vec![rule], "proxy");
+        assert_eq!(
+            r.route(
+                "in",
+                Some(NetworkKind::Tcp),
+                &Target::Domain("internal.local".into(), 80),
+                None
+            )
+            .0,
+            &RouteAction::Outbound("proxy".into())
+        );
+    }
+
+    #[test]
+    fn private_ip_outbound_field_ignored() {
+        // 即使填了 outbound，private_ip=true 时也固定直连
+        let rule = RouteRuleConfig {
+            private_ip: true,
+            outbound: "some-proxy".into(),
+            ..Default::default()
+        };
+        let r = make_router(vec![rule], "proxy");
+        assert_eq!(
+            r.route(
+                "in",
+                Some(NetworkKind::Tcp),
+                &Target::Socket("192.168.0.1:80".parse().unwrap()),
+                None
+            )
+            .0,
+            &RouteAction::Outbound("direct".into())
+        );
+    }
+
+    #[test]
+    fn private_ip_combined_with_other_conditions() {
+        // private_ip 可以与 network 过滤组合使用（AND 语义）
+        let rule = RouteRuleConfig {
+            private_ip: true,
+            network: Some(crate::config::route::NetworkFilter::Tcp),
+            ..Default::default()
+        };
+        let r = make_router(vec![rule], "proxy");
+
+        // TCP + 私有 IP → 命中
+        assert_eq!(
+            r.route(
+                "in",
+                Some(NetworkKind::Tcp),
+                &Target::Socket("10.0.0.1:80".parse().unwrap()),
+                None
+            )
+            .0,
+            &RouteAction::Outbound("direct".into())
+        );
+
+        // UDP + 私有 IP → 不命中（network 不匹配）
+        assert_eq!(
+            r.route(
+                "in",
+                Some(NetworkKind::Udp),
+                &Target::Socket("10.0.0.1:53".parse().unwrap()),
+                None
+            )
+            .0,
+            &RouteAction::Outbound("proxy".into())
+        );
+    }
 }
 
-// ── hijack_dns + protocol 行为测试 ────────────────────────────────────────────
 
 #[cfg(test)]
 mod hijack_dns_tests {
