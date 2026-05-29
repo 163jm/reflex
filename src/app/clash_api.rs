@@ -15,7 +15,7 @@
 use std::{
     collections::HashMap,
     path::{Component, Path, PathBuf},
-    sync::{atomic::Ordering, Arc},
+    sync::{atomic::Ordering, Arc, RwLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -1546,8 +1546,8 @@ fn conn_to_json(c: &ConnMeta) -> serde_json::Value {
         "download": c.download.load(Ordering::Relaxed),
         "start": ms_to_iso(c.started_ms),
         "chains": [c.outbound.clone()],
-        "rule": c.rule.clone(),
-        "rulePayload": c.rule_payload.clone(),
+        "rule": &*c.rule,
+        "rulePayload": &*c.rule_payload,
     })
 }
 
