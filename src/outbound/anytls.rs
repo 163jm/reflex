@@ -167,7 +167,7 @@ impl PaddingScheme {
 
 // ── ClientPadding：客户端级别共享，可被服务端更新 ─────────────────────────────
 
-struct ClientPadding {
+pub(crate) struct ClientPadding {
     scheme: std::sync::RwLock<PaddingScheme>,
 }
 
