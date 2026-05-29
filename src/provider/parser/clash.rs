@@ -463,19 +463,18 @@ proxies:
     fn skip_unsupported_type() {
         let yaml = r#"
 proxies:
-  - name: "SS节点"
-    type: ss
-    server: s.example.com
-    port: 1234
-    cipher: aes-256-gcm
-    password: pass
+  - name: "WireGuard节点"
+    type: wireguard
+    server: wg.example.com
+    port: 51820
+    private-key: "fake-key"
   - name: "HK HY2"
     type: hy2
     server: hk.example.com
     port: 443
     password: mypassword
 "#;
-        // ss 被跳过，hy2 保留
+        // wireguard 不支持，被跳过；hy2 保留
         let nodes = parse_clash_yaml(yaml).unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].0, "HK HY2");
