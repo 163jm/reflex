@@ -1,17 +1,17 @@
 //! Clash YAML 订阅格式解析器。
 //!
 //! 解析 `proxies:` 字段，将 Clash proxy 对象转换为 Reflex `OutboundConfig`。
-//! 支持：ss、vmess、vless、trojan、hysteria2、tuic。
+//! 支持：ss、vmess、vless、trojan、hysteria2、tuic、anytls、socks5/socks4a/socks4。
 
 use std::collections::HashMap;
 
 use serde::Deserialize;
 
 use crate::config::outbound::{
-    AnyTlsOutboundConfig, Hysteria2OutboundConfig, OutboundConfig, RealityConfig, TlsConfig,
-    TrojanOutboundConfig, TrojanTransportConfig, TuicOutboundConfig, VlessOutboundConfig,
-    VlessTlsConfig, VlessTransportConfig, VmessOutboundConfig, VmessTransportConfig,
-    WsTransportConfig,
+    AnyTlsOutboundConfig, Hysteria2OutboundConfig, OutboundConfig, RealityConfig,
+    ShadowsocksOutboundConfig, SocksOutboundConfig, TlsConfig, TrojanOutboundConfig,
+    TrojanTransportConfig, TuicOutboundConfig, VlessOutboundConfig, VlessTlsConfig,
+    VlessTransportConfig, VmessOutboundConfig, VmessTransportConfig, WsTransportConfig,
 };
 
 /// 解析 Clash YAML 文本，返回 (节点名, OutboundConfig) 列表。
@@ -56,6 +56,11 @@ struct ClashProxy {
     cipher: Option<String>,
     #[serde(default)]
     password: Option<String>,
+    // ss plugin (SIP003)
+    #[serde(default)]
+    plugin: Option<String>,
+    #[serde(rename = "plugin-opts", default)]
+    plugin_opts: Option<HashMap<String, serde_yaml::Value>>,
     // vmess
     #[serde(default)]
     uuid: Option<String>,
@@ -83,6 +88,13 @@ struct ClashProxy {
     network: Option<String>,
     #[serde(rename = "ws-opts", default)]
     ws_opts: Option<ClashWsOpts>,
+    // socks
+    #[serde(default)]
+    username: Option<String>,
+    // socks
+    #[serde(default)]
+    username: Option<String>,
+    // socks version: "5" | "4a" | "4"，Clash 用 socks5 type 名隐含版本
     // hysteria2
     #[serde(default)]
     up: Option<String>,
@@ -135,17 +147,47 @@ fn build_outbound(p: ClashProxy) -> anyhow::Result<OutboundConfig> {
         "hysteria2" | "hy2" => build_hysteria2(tag, p),
         "tuic" => build_tuic(tag, p),
         "anytls" => build_anytls(tag, p),
+        "socks5" => build_socks(tag, p, Some("5")),
+        "socks4a" => build_socks(tag, p, Some("4a")),
+        "socks4" => build_socks(tag, p, Some("4")),
         other => anyhow::bail!("unsupported proxy type: '{other}'"),
     }
 }
 
-/// Shadowsocks → Hysteria2（借用 ss 隧道思路，Reflex 暂无原生 SS outbound，跳过）
-fn build_ss(_tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
-    // Reflex 目前没有 SS outbound，跳过
-    anyhow::bail!(
-        "shadowsocks is not yet supported in Reflex (node: {})",
-        p.name
-    )
+fn build_ss(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
+    let method = p
+        .cipher
+        .ok_or_else(|| anyhow::anyhow!("ss node '{}' missing cipher", p.name))?;
+    let password = p
+        .password
+        .ok_or_else(|| anyhow::anyhow!("ss node '{}' missing password", p.name))?;
+
+    // plugin-opts 序列化为 "key=value;key=value" 字符串（兼容 SIP003 格式）
+    let plugin_opts = p.plugin_opts.map(|opts| {
+        opts.iter()
+            .map(|(k, v)| {
+                let val = match v {
+                    serde_yaml::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                format!("{k}={val}")
+            })
+            .collect::<Vec<_>>()
+            .join(";")
+    });
+
+    Ok(OutboundConfig::Shadowsocks(ShadowsocksOutboundConfig {
+        tag,
+        server: p.server,
+        server_port: p.port,
+        method,
+        password,
+        plugin: p.plugin,
+        plugin_opts,
+        transport: None,
+        tls: None,
+        detour: None,
+    }))
 }
 
 fn build_vmess(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
@@ -355,6 +397,23 @@ fn build_anytls(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
     }))
 }
 
+/// SOCKS 代理，Clash type 为 socks5 / socks4a / socks4。
+/// `version_override` 由调用方（`build_outbound` 分支）传入，对应 type 名。
+fn build_socks(
+    tag: String,
+    p: ClashProxy,
+    version_override: Option<&str>,
+) -> anyhow::Result<OutboundConfig> {
+    Ok(OutboundConfig::Socks(SocksOutboundConfig {
+        tag,
+        server: p.server,
+        server_port: p.port,
+        version: version_override.map(str::to_string),
+        username: p.username,
+        password: p.password,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +585,117 @@ proxies:
             assert!(!c.tls.insecure);
         } else {
             panic!("expected AnyTls outbound");
+        }
+    }
+
+    #[test]
+    fn parse_ss_basic() {
+        let yaml = r#"
+proxies:
+  - name: "SG SS"
+    type: ss
+    server: sg.example.com
+    port: 8388
+    cipher: aes-256-gcm
+    password: "mypassword"
+"#;
+        let nodes = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].0, "SG SS");
+        if let OutboundConfig::Shadowsocks(c) = &nodes[0].1 {
+            assert_eq!(c.server, "sg.example.com");
+            assert_eq!(c.server_port, 8388);
+            assert_eq!(c.method, "aes-256-gcm");
+            assert_eq!(c.password, "mypassword");
+            assert!(c.plugin.is_none());
+        } else {
+            panic!("expected Shadowsocks outbound");
+        }
+    }
+
+    #[test]
+    fn parse_ss_with_plugin() {
+        let yaml = r#"
+proxies:
+  - name: "SS Obfs"
+    type: ss
+    server: us.example.com
+    port: 443
+    cipher: chacha20-ietf-poly1305
+    password: "pluginpass"
+    plugin: obfs-local
+    plugin-opts:
+      obfs: http
+      obfs-host: www.example.com
+"#;
+        let nodes = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(nodes.len(), 1);
+        if let OutboundConfig::Shadowsocks(c) = &nodes[0].1 {
+            assert_eq!(c.plugin.as_deref(), Some("obfs-local"));
+            let opts = c.plugin_opts.as_deref().unwrap_or("");
+            assert!(opts.contains("obfs=http"), "opts was: {opts}");
+            assert!(opts.contains("obfs-host=www.example.com"), "opts was: {opts}");
+        } else {
+            panic!("expected Shadowsocks outbound");
+        }
+    }
+
+    #[test]
+    fn parse_ss_missing_cipher() {
+        let yaml = r#"
+proxies:
+  - name: "Bad SS"
+    type: ss
+    server: x.example.com
+    port: 1234
+    password: "pass"
+"#;
+        // cipher 缺失，节点被跳过
+        let nodes = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(nodes.len(), 0);
+    }
+
+    #[test]
+    fn parse_socks5_with_auth() {
+        let yaml = r#"
+proxies:
+  - name: "Corp SOCKS5"
+    type: socks5
+    server: proxy.corp.com
+    port: 1080
+    username: alice
+    password: "s3cr3t"
+"#;
+        let nodes = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].0, "Corp SOCKS5");
+        if let OutboundConfig::Socks(c) = &nodes[0].1 {
+            assert_eq!(c.server, "proxy.corp.com");
+            assert_eq!(c.server_port, 1080);
+            assert_eq!(c.version.as_deref(), Some("5"));
+            assert_eq!(c.username.as_deref(), Some("alice"));
+            assert_eq!(c.password.as_deref(), Some("s3cr3t"));
+        } else {
+            panic!("expected Socks outbound");
+        }
+    }
+
+    #[test]
+    fn parse_socks4a() {
+        let yaml = r#"
+proxies:
+  - name: "Old SOCKS"
+    type: socks4a
+    server: legacy.example.com
+    port: 1080
+"#;
+        let nodes = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(nodes.len(), 1);
+        if let OutboundConfig::Socks(c) = &nodes[0].1 {
+            assert_eq!(c.version.as_deref(), Some("4a"));
+            assert!(c.username.is_none());
+        } else {
+            panic!("expected Socks outbound");
         }
     }
 }
