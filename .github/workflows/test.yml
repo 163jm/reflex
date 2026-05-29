@@ -6,13 +6,8 @@ on:
       version:
         description: "Release version (e.g. v1.0.0)"
         required: true
-        default: 'v0.0.'
+        default: 'v0.0.1'
         type: string
-      prerelease:
-        description: "Mark as pre-release"
-        required: false
-        default: true
-        type: boolean
 
 env:
   CARGO_TERM_COLOR: always
@@ -214,7 +209,7 @@ jobs:
         with:
           tag_name:   ${{ needs.validate.outputs.version }}
           name:       "reflex ${{ needs.validate.outputs.version }}"
-          prerelease: ${{ github.event.inputs.prerelease }}
+          prerelease: true
           draft:      false
           files: |
             artifacts/**/*.tar.gz
