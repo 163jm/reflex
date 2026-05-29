@@ -91,9 +91,6 @@ struct ClashProxy {
     // socks
     #[serde(default)]
     username: Option<String>,
-    // socks
-    #[serde(default)]
-    username: Option<String>,
     // socks version: "5" | "4a" | "4"，Clash 用 socks5 type 名隐含版本
     // hysteria2
     #[serde(default)]
@@ -168,7 +165,9 @@ fn build_ss(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
             .map(|(k, v)| {
                 let val = match v {
                     serde_yaml::Value::String(s) => s.clone(),
-                    other => other.to_string(),
+                    serde_yaml::Value::Bool(b) => b.to_string(),
+                    serde_yaml::Value::Number(n) => n.to_string(),
+                    other => serde_json::to_string(other).unwrap_or_default(),
                 };
                 format!("{k}={val}")
             })
