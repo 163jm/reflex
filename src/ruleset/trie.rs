@@ -16,6 +16,8 @@ use std::collections::HashMap;
 pub struct SuffixTrie {
     /// 节点池，下标即节点 ID；`nodes[0]` 永远是 root
     nodes: Vec<TrieNode>,
+    /// terminal 节点数量（维护计数器，避免 len() 时 O(n) 遍历）
+    terminal_count: usize,
 }
 
 struct TrieNode {
@@ -39,6 +41,7 @@ impl SuffixTrie {
     pub fn new() -> Self {
         Self {
             nodes: vec![TrieNode::new()],
+            terminal_count: 0,
         }
     }
 
@@ -60,7 +63,11 @@ impl SuffixTrie {
             };
         }
 
-        self.nodes[cur as usize].is_terminal = true;
+        // 维护计数器：只有从非 terminal 变为 terminal 时 +1（幂等插入不重复计）
+        if !self.nodes[cur as usize].is_terminal {
+            self.nodes[cur as usize].is_terminal = true;
+            self.terminal_count += 1;
+        }
     }
 
     /// 判断 domain 是否被任意已插入的后缀规则覆盖。
@@ -86,13 +93,13 @@ impl SuffixTrie {
         self.nodes[cur as usize].is_terminal
     }
 
-    /// 当前存储的规则数量（terminal 节点数）
+    /// 当前存储的规则数量（O(1)，由计数器维护）
     pub fn len(&self) -> usize {
-        self.nodes.iter().filter(|n| n.is_terminal).count()
+        self.terminal_count
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.terminal_count == 0
     }
 
     /// 节点总数（含 root），用于内存分析

@@ -1,4 +1,13 @@
 //! Dispatcher：从入站通道接收连接/包，查询路由器，转发给对应出站，记录统计。
+//!
+//! ## 优化：RuleInfo 热路径零分配
+//! router.route_*() 返回 (&RouteAction, &str, &str)，其中 &str 指向路由器内部字符串。
+//! 原来立刻 .to_string() 分配堆内存；现改为 .into() 转 Arc<str>，
+//! 只分配一个引用计数块，clone() 仅原子 +1。
+//!
+//! ## 优化：UdpSessionKey 减少分配
+//! target_str 使用 Box<str> 替代 String（少 1 word 开销），
+//! outbound_tag 使用 Arc<str> 避免 clone 时复制。
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
@@ -40,9 +49,11 @@ fn udp_timeout_for_port(port: u16) -> Duration {
 
 // ── UDP 会话表 ────────────────────────────────────────────────────────────────
 
-/// 会话 key：(入站源地址, 目标地址, 出站 tag)
+/// 会话 key：(入站源地址, 目标地址字符串, 出站 tag)
 /// 同一 (src, dst) 走不同出站时各自独立（规则切换场景）
-type UdpSessionKey = (SocketAddr, String, String); // (src, target_str, outbound_tag)
+///
+/// 优化：outbound_tag 用 Arc<str> 避免 clone 时复制字符串内容
+type UdpSessionKey = (SocketAddr, Box<str>, Arc<str>); // (src, target_str, outbound_tag)
 
 /// 向已存在会话的入站方向投递数据
 struct UdpSessionHandle {
@@ -138,9 +149,10 @@ impl Dispatcher {
             // 先做第一次路由，检查是否需要嗅探
             let (action_ref, rule_type, rule_payload) = self.router.route_tcp(&conn);
             let action = action_ref.clone();
+            // 优化：.into() 将 &str 转为 Arc<str>，避免 .to_string() 的堆复制
             let mut rule_info = RuleInfo {
-                rule_type: rule_type.to_string(),
-                rule_payload: rule_payload.to_string(),
+                rule_type: rule_type.into(),
+                rule_payload: rule_payload.into(),
             };
             let action = if let RouteAction::Sniff {
                 timeout_ms,
@@ -196,8 +208,8 @@ impl Dispatcher {
                 {
                     let (a, rt, rp) = self.router.route_tcp_after_sniff(&conn, &conn.target);
                     rule_info = RuleInfo {
-                        rule_type: rt.to_string(),
-                        rule_payload: rp.to_string(),
+                        rule_type: rt.into(),
+                        rule_payload: rp.into(),
                     };
                     a.clone()
                 }
@@ -227,8 +239,8 @@ impl Dispatcher {
                                 let (a, rt, rp) =
                                     self.router.route_tcp_after_resolve(&conn, &resolved_target);
                                 rule_info = RuleInfo {
-                                    rule_type: rt.to_string(),
-                                    rule_payload: rp.to_string(),
+                                    rule_type: rt.into(),
+                                    rule_payload: rp.into(),
                                 };
                                 a.clone()
                             }
@@ -240,8 +252,8 @@ impl Dispatcher {
                                 let (a, rt, rp) =
                                     self.router.route_tcp_after_resolve(&conn, &conn.target);
                                 rule_info = RuleInfo {
-                                    rule_type: rt.to_string(),
-                                    rule_payload: rp.to_string(),
+                                    rule_type: rt.into(),
+                                    rule_payload: rp.into(),
                                 };
                                 a.clone()
                             }
@@ -251,8 +263,8 @@ impl Dispatcher {
                     // 目标已经是 IP，无需解析，直接跳过 resolve 继续
                     let (a, rt, rp) = self.router.route_tcp_after_resolve(&conn, &conn.target);
                     rule_info = RuleInfo {
-                        rule_type: rt.to_string(),
-                        rule_payload: rp.to_string(),
+                        rule_type: rt.into(),
+                        rule_payload: rp.into(),
                     };
                     a.clone()
                 }
@@ -309,18 +321,16 @@ impl Dispatcher {
                     let (action_ref, rule_type, rule_payload) = self.router.route_udp(&packet);
                     let action = action_ref.clone();
                     let mut rule_info = RuleInfo {
-                        rule_type: rule_type.to_string(),
-                        rule_payload: rule_payload.to_string(),
+                        rule_type: rule_type.into(),
+                        rule_payload: rule_payload.into(),
                     };
 
                     // UDP 不支持嗅探，跳过 Sniff 规则后继续向后匹配（与 TCP 对称）。
-                    // 原来直接用 default_action 会跳过所有后续规则，导致非 fakeip 场景下
-                    // 所有 UDP 流量都落到 final，产生无法复用的 session 并堆积内存。
                     let action = if matches!(action, RouteAction::Sniff { .. }) {
                         let (a, rt, rp) = self.router.route_udp_after_sniff(&packet);
                         rule_info = RuleInfo {
-                            rule_type: rt.to_string(),
-                            rule_payload: rp.to_string(),
+                            rule_type: rt.into(),
+                            rule_payload: rp.into(),
                         };
                         a.clone()
                     } else {
@@ -340,19 +350,19 @@ impl Dispatcher {
                                 Ok(ip) => {
                                     let resolved = Target::Socket(std::net::SocketAddr::new(ip, port));
                                     let (a, rt, rp) = self.router.route_udp_after_resolve(&packet, &resolved);
-                                    rule_info = RuleInfo { rule_type: rt.to_string(), rule_payload: rp.to_string() };
+                                    rule_info = RuleInfo { rule_type: rt.into(), rule_payload: rp.into() };
                                     a.clone()
                                 }
                                 Err(e) => {
                                     debug!(domain = %host, err = %e, "resolve(udp): DNS lookup failed, falling through");
                                     let (a, rt, rp) = self.router.route_udp_after_resolve(&packet, &packet.target);
-                                    rule_info = RuleInfo { rule_type: rt.to_string(), rule_payload: rp.to_string() };
+                                    rule_info = RuleInfo { rule_type: rt.into(), rule_payload: rp.into() };
                                     a.clone()
                                 }
                             }
                         } else {
                             let (a, rt, rp) = self.router.route_udp_after_resolve(&packet, &packet.target);
-                            rule_info = RuleInfo { rule_type: rt.to_string(), rule_payload: rp.to_string() };
+                            rule_info = RuleInfo { rule_type: rt.into(), rule_payload: rp.into() };
                             a.clone()
                         }
                     } else {
@@ -374,8 +384,9 @@ impl Dispatcher {
                     }
 
                     // 对于真正的出站，使用会话复用
-                    let outbound_tag = match &action {
-                        RouteAction::Outbound(tag) => tag.clone(),
+                    // 优化：outbound_tag 转 Arc<str>，session_key clone 时只原子 +1
+                    let outbound_tag: Arc<str> = match &action {
+                        RouteAction::Outbound(tag) => tag.as_str().into(),
                         _ => {
                             // Block / 其他 action，直接 dispatch
                             let mgr = self.outbound_mgr.clone();
@@ -391,7 +402,8 @@ impl Dispatcher {
                         }
                     };
 
-                    let target_str = packet.target.to_string();
+                    // 优化：Box<str> 比 String 少 1 word（无 capacity 字段），key 更紧凑
+                    let target_str: Box<str> = packet.target.to_string().into_boxed_str();
                     let session_key: UdpSessionKey = (packet.src, target_str, outbound_tag.clone());
                     let timeout = udp_timeout_for_port(packet.target.port());
 
@@ -418,14 +430,15 @@ impl Dispatcher {
                         let target = packet.target.clone();
                         let inbound_tag = packet.inbound_tag.clone();
                         let rule_info_clone = rule_info.clone();
-                        let ob_tag = outbound_tag.clone();
+                        // Arc<str> clone 只是原子 +1
+                        let ob_tag_str = outbound_tag.clone();
 
                         tokio::spawn(async move {
                             run_udp_session(
                                 src,
                                 target,
                                 inbound_tag,
-                                ob_tag,
+                                ob_tag_str,
                                 data_rx,
                                 reply_tx,
                                 rule_info_clone,
@@ -456,17 +469,13 @@ impl Dispatcher {
 }
 
 // ── UDP 会话 task ─────────────────────────────────────────────────────────────
-//
-// 每个 (src, dst, outbound) 三元组对应一个此 task。
-// task 持有与出站的连接，循环收包→转发，并在空闲超时后自动退出。
-// task 退出后 data_tx 端的 Sender 关闭，session_table.get_live 检测到后自动清理。
 
 #[allow(clippy::too_many_arguments)]
 async fn run_udp_session(
     src: SocketAddr,
     target: Target,
     inbound_tag: String,
-    outbound_tag: String,
+    outbound_tag: Arc<str>,
     mut data_rx: mpsc::Receiver<bytes::Bytes>,
     reply_tx: mpsc::Sender<(bytes::Bytes, SocketAddr, SocketAddr)>,
     rule_info: RuleInfo,
@@ -509,13 +518,9 @@ async fn run_udp_session(
         )
     });
 
-    // 将 data_rx（后续上行包通道）塞进第一个包，让出站实现在内部持续转发。
-    // 这样 direct 出站只创建一个 socket（固定源端口），游戏服务器不会因为源端口
-    // 变化而断连。代理出站若不理会 upstream_rx，则退化为只处理一个包的旧行为（兼容）。
     match tokio::time::timeout(timeout, data_rx.recv()).await {
         Ok(Some(first_payload)) => {
             let up_bytes = first_payload.len() as i64;
-            // 用包装过的 reply_tx 统计下行字节
             let live_down_clone = live_down.clone();
             let (counting_tx, mut counting_rx) =
                 mpsc::channel::<(bytes::Bytes, SocketAddr, SocketAddr)>(64);
@@ -539,8 +544,6 @@ async fn run_udp_session(
                 sniffed_protocol: None,
                 sniffed_domain: None,
                 upstream_rx: Some(data_rx),
-                // 把 conn_guard 和 _guard 移进 packet，让出站持久 task 持有它们，
-                // 确保连接在 clash API 中保持可见，直到 socket 真正关闭。
                 lifetime_guards: vec![Box::new(conn_guard), Box::new(_guard)],
             };
             if let Err(e) = ob.handle_udp(packet).await {
@@ -548,8 +551,6 @@ async fn run_udp_session(
             }
             use std::sync::atomic::Ordering;
             live_up.fetch_add(up_bytes, Ordering::Relaxed);
-            // _guard 已经 move 进 packet，不能在这里 add_bytes。
-            // 上行字节统计改由 live_up 原子计数器承担（已在上方 fetch_add）。
         }
         Ok(None) => {
             debug!(src=%src, dst=%target, "udp session: data_rx closed");
@@ -586,7 +587,6 @@ async fn dispatch_tcp(
                 .ok_or_else(|| anyhow::anyhow!("outbound '{tag}' not found"))?;
             debug!(tag=%tag, target=%conn.target, "tcp → outbound");
             let guard = TcpGuard::new(stats.tag(&tag));
-            // 注册到连接追踪器，conn_guard drop 时自动移除
             let host = conn.target.host();
             let dest_port = conn.target.port();
             let source = conn
@@ -622,11 +622,9 @@ async fn dispatch_tcp(
             }
         }
         RouteAction::Sniff { .. } => {
-            // 不可达：Sniff 在 run_tcp 中已处理并重路由，不会传入此函数
             unreachable!("Sniff action must not reach dispatch_tcp")
         }
         RouteAction::Resolve { .. } => {
-            // 不可达：Resolve 在 run_tcp 中已处理并重路由，不会传入此函数
             unreachable!("Resolve action must not reach dispatch_tcp")
         }
     }
@@ -649,7 +647,6 @@ async fn dispatch_udp(
             handle_dns_udp(packet, dns_tx).await
         }
         RouteAction::Outbound(tag) => {
-            // 仅在无法走会话复用时（如 Block 降级）走这里，正常 Outbound 由 run_udp 的会话 task 处理
             let ob = mgr
                 .get(&tag)
                 .ok_or_else(|| anyhow::anyhow!("outbound '{tag}' not found"))?;

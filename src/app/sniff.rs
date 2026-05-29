@@ -63,7 +63,7 @@ impl SniffType {
 
 /// 默认嗅探超时
 const DEFAULT_TIMEOUT_MS: u64 = 300;
-/// 单次最多读取字节数
+/// 单次最多读取字节数（2048 字节在栈上完全安全，Rust 默认栈 8MB）
 const PEEK_BUF_SIZE: usize = 2048;
 
 /// 对 `stream` 进行非破坏性协议嗅探。
@@ -95,7 +95,9 @@ pub async fn sniff(
         types
     };
 
-    let mut buf = vec![0u8; PEEK_BUF_SIZE];
+    // 优化：栈数组替代堆分配 vec。PEEK_BUF_SIZE=2048，远小于默认栈大小（8MB）。
+    // 每条 TCP 连接触发嗅探时省去一次堆分配+释放。
+    let mut buf = [0u8; PEEK_BUF_SIZE];
 
     let n = match tokio::time::timeout(timeout, stream.inner.read(&mut buf)).await {
         Ok(Ok(n)) if n > 0 => n,

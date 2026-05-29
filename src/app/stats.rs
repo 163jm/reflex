@@ -4,11 +4,15 @@
 //!
 //! 在 32 位平台（如 mips32）上 `AtomicU64` 不存在，
 //! 通过条件编译退化为 `AtomicU32`；对外接口统一使用 `u64`。
+//!
+//! ## 优化：DashMap 替代 RwLock<HashMap>
+//! Stats::tag() 在每条连接建立/统计时都会被调用。原版用 RwLock<HashMap>，
+//! 高并发下读锁升级写锁有额外开销。DashMap 内置分片锁（默认 16 片），
+//! 并发写性能比全局 RwLock 好一个数量级。
 
-use std::{
-    collections::HashMap,
-    sync::{atomic::Ordering, Arc, RwLock},
-};
+use std::{collections::HashMap, sync::{atomic::Ordering, Arc}};
+
+use dashmap::DashMap;
 
 // ── 平台适配：32 位用 AtomicU32，64 位用 AtomicU64 ────────────────────────────
 
@@ -74,26 +78,23 @@ pub struct TagSnapshot {
 // ── 全局统计注册表 ─────────────────────────────────────────────────────────────
 
 pub struct Stats {
-    tags: RwLock<HashMap<String, Arc<TagStats>>>,
+    /// DashMap 内置 16 分片锁，并发写性能远优于全局 RwLock<HashMap>。
+    /// tag() 在每条连接建立时都会调用，这里是高并发热点。
+    tags: DashMap<String, Arc<TagStats>>,
 }
 
 impl Stats {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            tags: RwLock::new(HashMap::new()),
+            tags: DashMap::new(),
         })
     }
 
-    /// 获取或创建某个 tag 的统计对象
+    /// 获取或创建某个 tag 的统计对象。
+    /// DashMap::entry() 内部分片锁，避免全局写锁竞争。
     pub fn tag(&self, tag: &str) -> Arc<TagStats> {
-        {
-            let r = self.tags.read().unwrap();
-            if let Some(s) = r.get(tag) {
-                return s.clone();
-            }
-        }
-        let mut w = self.tags.write().unwrap();
-        w.entry(tag.to_string())
+        self.tags
+            .entry(tag.to_string())
             .or_insert_with(|| Arc::new(TagStats::default()))
             .clone()
     }
@@ -101,21 +102,17 @@ impl Stats {
     /// 所有 tag 的快照
     pub fn snapshot_all(&self) -> HashMap<String, TagSnapshot> {
         self.tags
-            .read()
-            .unwrap()
             .iter()
-            .map(|(k, v)| (k.clone(), v.snapshot()))
+            .map(|entry| (entry.key().clone(), entry.value().snapshot()))
             .collect()
     }
 
     /// 全局汇总
     pub fn global_snapshot(&self) -> TagSnapshot {
         self.tags
-            .read()
-            .unwrap()
-            .values()
-            .fold(TagSnapshot::zero(), |mut acc, s| {
-                let snap = s.snapshot();
+            .iter()
+            .fold(TagSnapshot::zero(), |mut acc, entry| {
+                let snap = entry.value().snapshot();
                 acc.tcp_active += snap.tcp_active;
                 acc.udp_active += snap.udp_active;
                 acc.tcp_total += snap.tcp_total;

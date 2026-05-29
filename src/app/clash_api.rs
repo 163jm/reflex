@@ -15,9 +15,11 @@
 use std::{
     collections::HashMap,
     path::{Component, Path, PathBuf},
-    sync::{atomic::Ordering, Arc, RwLock},
+    sync::{atomic::Ordering, Arc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+use dashmap::DashMap;
 
 // 64-bit atomics are unavailable on 32-bit targets (e.g. MIPS).
 // Use 32-bit variants there; traffic counters will wrap but that is
@@ -95,11 +97,18 @@ impl DelayHistory {
 
 // ── 连接追踪 ──────────────────────────────────────────────────────────────────
 
-/// 命中规则信息，打包传递以规避 clippy::too_many_arguments
+/// 命中规则信息。
+///
+/// ## 优化：Arc<str> 替代 String
+/// rule_type 几乎全是静态字符串（"DOMAIN", "RULE-SET" 等），
+/// rule_payload 来自路由器内部字符串切片。
+/// 改用 Arc<str> 后，从 &str 创建只分配一次引用计数块，
+/// clone() 仅增加引用计数（原子 +1），不再复制字符串内容。
+/// 在 Dispatcher 热路径上每条连接可节省 2~4 次堆分配。
 #[derive(Clone, Default)]
 pub struct RuleInfo {
-    pub rule_type: String,
-    pub rule_payload: String,
+    pub rule_type: Arc<str>,
+    pub rule_payload: Arc<str>,
 }
 
 /// 连接基本信息，打包传递以规避 clippy::too_many_arguments
@@ -122,8 +131,9 @@ pub struct ConnMeta {
     pub dest_port: u16,
     pub inbound: String,
     pub outbound: String,
-    pub rule: String,
-    pub rule_payload: String,
+    /// Arc<str>：从 RuleInfo clone 时只增加引用计数，不复制字符串
+    pub rule: Arc<str>,
+    pub rule_payload: Arc<str>,
     pub started_ms: u64,
     pub upload: Arc<AtomicI64>,
     pub download: Arc<AtomicI64>,
@@ -158,14 +168,16 @@ impl ConnGuard {
 
 pub struct ConnectionTracker {
     next_id: AtomicU64,
-    conns: RwLock<HashMap<u64, ConnMeta>>,
+    /// DashMap 替代 RwLock<HashMap>：每条连接建立/断开都要写，
+    /// 高并发时全局写锁是瓶颈。DashMap 16 分片锁大幅降低竞争。
+    conns: DashMap<u64, ConnMeta>,
 }
 
 impl ConnectionTracker {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             next_id: AtomicU64::new(1),
-            conns: RwLock::new(HashMap::new()),
+            conns: DashMap::new(),
         })
     }
 
@@ -191,7 +203,7 @@ impl ConnectionTracker {
             upload: Arc::new(AtomicI64::new(0)),
             download: Arc::new(AtomicI64::new(0)),
         };
-        self.conns.write().unwrap().insert(id, meta);
+        self.conns.insert(id, meta);
         ConnGuard {
             id,
             tracker: self.clone(),
@@ -199,28 +211,28 @@ impl ConnectionTracker {
     }
 
     fn remove(&self, id: u64) {
-        self.conns.write().unwrap().remove(&id);
+        self.conns.remove(&id);
     }
 
     fn get(&self, id: u64) -> Option<ConnMeta> {
-        self.conns.read().unwrap().get(&id).cloned()
+        self.conns.get(&id).map(|r| r.clone())
     }
 
     fn snapshot(&self) -> Vec<ConnMeta> {
-        self.conns.read().unwrap().values().cloned().collect()
+        self.conns.iter().map(|r| r.value().clone()).collect()
     }
 
     /// 按 id 删除单条连接（供 DELETE /connections/:id 使用）
     pub fn len(&self) -> usize {
-        self.conns.read().unwrap().len()
+        self.conns.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.conns.read().unwrap().is_empty()
+        self.conns.is_empty()
     }
 
     pub fn remove_by_id(&self, id: u64) {
-        self.conns.write().unwrap().remove(&id);
+        self.conns.remove(&id);
     }
 }
 

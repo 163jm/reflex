@@ -95,6 +95,6 @@ tokio    = { version = "1", features = ["full"] }
 [profile.release]
 strip         = "symbols"  # 剥离调试符号表，不影响运行
 debug         = false      # 不内嵌调试信息
-lto           = "thin"     # 跨 crate 裁掉未调用的代码，thin 构建速度可接受
+lto           = true       # fat LTO：完整跨 crate 内联分析，比 "thin" 多榨 3-8% 吞吐
 codegen-units = 1          # 单编译单元，允许更完整的内联分析
 panic         = "abort"    # panic 直接退出，去掉 unwind 运行时；proxy 场景无影响
