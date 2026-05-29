@@ -8,9 +8,10 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::config::outbound::{
-    Hysteria2OutboundConfig, OutboundConfig, RealityConfig, TlsConfig, TrojanOutboundConfig,
-    TrojanTransportConfig, TuicOutboundConfig, VlessOutboundConfig, VlessTlsConfig,
-    VlessTransportConfig, VmessOutboundConfig, VmessTransportConfig, WsTransportConfig,
+    AnyTlsOutboundConfig, Hysteria2OutboundConfig, OutboundConfig, RealityConfig, TlsConfig,
+    TrojanOutboundConfig, TrojanTransportConfig, TuicOutboundConfig, VlessOutboundConfig,
+    VlessTlsConfig, VlessTransportConfig, VmessOutboundConfig, VmessTransportConfig,
+    WsTransportConfig,
 };
 
 /// 解析 Clash YAML 文本，返回 (节点名, OutboundConfig) 列表。
@@ -133,6 +134,7 @@ fn build_outbound(p: ClashProxy) -> anyhow::Result<OutboundConfig> {
         "trojan" => build_trojan(tag, p),
         "hysteria2" | "hy2" => build_hysteria2(tag, p),
         "tuic" => build_tuic(tag, p),
+        "anytls" => build_anytls(tag, p),
         other => anyhow::bail!("unsupported proxy type: '{other}'"),
     }
 }
@@ -325,6 +327,34 @@ fn build_ws_transport(opts: Option<ClashWsOpts>) -> WsTransportConfig {
     }
 }
 
+/// AnyTLS Clash 代理格式：
+/// ```yaml
+/// - name: "my-anytls"
+///   type: anytls
+///   server: example.com
+///   port: 443
+///   password: "your-password"
+///   sni: example.com
+///   skip-cert-verify: false
+/// ```
+fn build_anytls(tag: String, p: ClashProxy) -> anyhow::Result<OutboundConfig> {
+    let password = p
+        .password
+        .ok_or_else(|| anyhow::anyhow!("anytls node '{}' missing password", p.name))?;
+    let tls = build_tls(p.tls.unwrap_or(true), p.skip_cert_verify, p.sni, p.alpn);
+    Ok(OutboundConfig::AnyTls(AnyTlsOutboundConfig {
+        tag,
+        server: p.server,
+        server_port: p.port,
+        password,
+        tls,
+        idle_session_check_interval: None,
+        idle_session_timeout: None,
+        min_idle_session: 0,
+        detour: None,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,5 +501,31 @@ proxies:
         // password 缺失，节点被跳过（warn 日志），结果为空
         let nodes = parse_clash_yaml(yaml).unwrap();
         assert_eq!(nodes.len(), 0);
+    }
+
+    #[test]
+    fn parse_anytls() {
+        let yaml = r#"
+proxies:
+  - name: "AnyTLS Node"
+    type: anytls
+    server: tls.example.com
+    port: 443
+    password: "secret-pass"
+    sni: tls.example.com
+    skip-cert-verify: false
+"#;
+        let nodes = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].0, "AnyTLS Node");
+        if let OutboundConfig::AnyTls(c) = &nodes[0].1 {
+            assert_eq!(c.server, "tls.example.com");
+            assert_eq!(c.server_port, 443);
+            assert_eq!(c.password, "secret-pass");
+            assert_eq!(c.tls.server_name.as_deref(), Some("tls.example.com"));
+            assert!(!c.tls.insecure);
+        } else {
+            panic!("expected AnyTls outbound");
+        }
     }
 }

@@ -12,6 +12,8 @@ pub enum OutboundConfig {
     Hysteria2(Hysteria2OutboundConfig),
     Tuic(TuicOutboundConfig),
     Trojan(TrojanOutboundConfig),
+    #[serde(rename = "anytls")]
+    AnyTls(AnyTlsOutboundConfig),
     Direct(DirectOutboundConfig),
     Block(BlockOutboundConfig),
     Socks(SocksOutboundConfig),
@@ -28,6 +30,7 @@ impl OutboundConfig {
             Self::Hysteria2(c) => &c.tag,
             Self::Tuic(c) => &c.tag,
             Self::Trojan(c) => &c.tag,
+            Self::AnyTls(c) => &c.tag,
             Self::Direct(c) => &c.tag,
             Self::Block(c) => &c.tag,
             Self::Socks(c) => &c.tag,
@@ -62,6 +65,66 @@ impl OutboundConfig {
     pub fn is_group(&self) -> bool {
         matches!(self, Self::Selector(_) | Self::UrlTest(_))
     }
+}
+
+// ── AnyTLS ────────────────────────────────────────────────────────────────────
+
+/// AnyTLS 出站配置（与 sing-box AnyTLSOutboundOptions 对齐）。
+///
+/// AnyTLS 是基于 TLS 的多路复用代理协议。
+/// - 认证：TLS 握手后发送 sha256(password) + padding
+/// - 会话复用：多个 Stream 复用同一 TLS 连接
+/// - UDP：使用 sing-box UDP-over-TCP v2 协议封装（目标地址 `sp.v2.udp-over-tcp.arpa:443`）
+///
+/// 配置示例：
+/// ```json
+/// {
+///   "type": "anytls",
+///   "tag": "anytls-proxy",
+///   "server": "example.com",
+///   "server_port": 443,
+///   "password": "your-password",
+///   "tls": {
+///     "enabled": true,
+///     "server_name": "example.com",
+///     "insecure": false
+///   },
+///   "idle_session_check_interval": "30s",
+///   "idle_session_timeout": "60s",
+///   "min_idle_session": 0
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnyTlsOutboundConfig {
+    pub tag: String,
+
+    /// 服务器域名或 IP
+    pub server: String,
+
+    pub server_port: u16,
+
+    /// 认证密码
+    pub password: String,
+
+    /// TLS 配置（AnyTLS 必须启用 TLS）
+    #[serde(default)]
+    pub tls: TlsConfig,
+
+    /// 空闲会话检查间隔（如 "30s"，默认 "30s"）
+    #[serde(default)]
+    pub idle_session_check_interval: Option<String>,
+
+    /// 空闲会话超时（如 "60s"，默认 "60s"）
+    #[serde(default)]
+    pub idle_session_timeout: Option<String>,
+
+    /// 最少保留的空闲会话数（默认 0）
+    #[serde(default)]
+    pub min_idle_session: u32,
+
+    /// 出站链式代理（预留）
+    #[serde(default)]
+    pub detour: Option<String>,
 }
 
 // ── Shadowsocks ───────────────────────────────────────────────────────────────

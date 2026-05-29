@@ -328,6 +328,24 @@
       "up_mbps": 50,
       "down_mbps": 200
     },
+// AnyTLS（基于 TLS 多路复用代理，UDP 通过 sing-box UoT v2 承载）
+    // 配置格式与 sing-box 完全一致
+    {
+      "type": "anytls",
+      "tag": "anytls-proxy",
+      "server": "your-anytls-server.example.com",
+      "server_port": 443,
+      "password": "your-password",
+      "tls": {
+        "enabled": true,
+        "server_name": "your-anytls-server.example.com",
+        "insecure": false
+      },
+      // 以下字段可选（使用默认值即可）
+      "idle_session_check_interval": "30s",
+      "idle_session_timeout": "60s",
+      "min_idle_session": 0
+    },
     // Trojan over TCP + TLS（与 sing-box 配置格式一致）
     {
       "type": "trojan",
