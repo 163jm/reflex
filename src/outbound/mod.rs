@@ -4,6 +4,8 @@ pub mod proto;
 pub mod socks;
 
 #[cfg(feature = "outbound-net")]
+pub mod anytls;
+#[cfg(feature = "outbound-net")]
 pub mod hy2;
 #[cfg(feature = "outbound-net")]
 pub mod shadowsocks;
@@ -20,8 +22,6 @@ pub mod vmess;
 #[cfg(feature = "outbound-net")]
 #[cfg(feature = "outbound-net")]
 pub mod xhttp;
-#[cfg(feature = "outbound-net")]
-pub mod anytls;
 
 use crate::dns::DnsResolver;
 use crate::inbound::{InboundTcpStream, InboundUdpPacket, Target};

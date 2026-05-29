@@ -983,7 +983,7 @@ async fn dispatch_udp(
         sniffed_protocol: None,
         sniffed_domain: None,
         upstream_rx: None,
-                    lifetime_guards: vec![],
+        lifetime_guards: vec![],
     };
     if udp_tx.send(packet).await.is_err() {
         debug!("tun: udp_tx closed");

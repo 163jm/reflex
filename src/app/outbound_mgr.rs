@@ -119,7 +119,8 @@ impl OutboundManager {
 
                 #[cfg(feature = "outbound-net")]
                 OutboundConfig::AnyTls(c) => Arc::new(
-                    crate::outbound::anytls::AnyTlsOutbound::new(c.clone())?.with_mark(routing_mark),
+                    crate::outbound::anytls::AnyTlsOutbound::new(c.clone())?
+                        .with_mark(routing_mark),
                 ),
                 #[cfg(not(feature = "outbound-net"))]
                 OutboundConfig::AnyTls(c) => fallback_block(&c.tag, "AnyTLS"),

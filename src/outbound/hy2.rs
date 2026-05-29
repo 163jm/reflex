@@ -598,7 +598,8 @@ impl Outbound for Hy2Outbound {
             let session_id_up = self.udp_session_id.fetch_add(1, Ordering::Relaxed);
             tokio::spawn(async move {
                 while let Some(data) = upstream_rx.recv().await {
-                    if send_udp_fragmented(&qconn_send, session_id_up, &addr_clone, &data).is_err() {
+                    if send_udp_fragmented(&qconn_send, session_id_up, &addr_clone, &data).is_err()
+                    {
                         break;
                     }
                 }
@@ -615,18 +616,22 @@ impl Outbound for Hy2Outbound {
         tokio::spawn(async move {
             loop {
                 match tokio::time::timeout(timeout, qconn.read_datagram()).await {
-                    Ok(Ok(data)) => {
-                        match recv_udp_reassemble(&qconn, data).await {
-                            Ok(Some(payload)) => {
-                                if reply_tx.send((payload, src, spoofed_src)).await.is_err() {
-                                    break;
-                                }
+                    Ok(Ok(data)) => match recv_udp_reassemble(&qconn, data).await {
+                        Ok(Some(payload)) => {
+                            if reply_tx.send((payload, src, spoofed_src)).await.is_err() {
+                                break;
                             }
-                            Ok(None) => {}
-                            Err(e) => { warn!(err = %e, "hy2 udp reassemble error"); break; }
                         }
+                        Ok(None) => {}
+                        Err(e) => {
+                            warn!(err = %e, "hy2 udp reassemble error");
+                            break;
+                        }
+                    },
+                    Ok(Err(e)) => {
+                        warn!(err = %e, "hy2 udp recv error");
+                        break;
                     }
-                    Ok(Err(e)) => { warn!(err = %e, "hy2 udp recv error"); break; }
                     Err(_) => break, // idle timeout
                 }
             }

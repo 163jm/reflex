@@ -804,7 +804,11 @@ impl Outbound for ShadowsocksOutbound {
         debug!(tag = %self.config.tag, target = %packet.target, "shadowsocks udp relay");
 
         let server_addr = self.server_addr().await?;
-        let local_bind = if server_addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+        let local_bind = if server_addr.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
         let udp = std::sync::Arc::new(UdpSocket::bind(local_bind).await?);
         apply_mark_to_udp(&udp, self.routing_mark)?;
         udp.connect(server_addr).await?;

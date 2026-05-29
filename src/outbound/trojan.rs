@@ -295,9 +295,7 @@ impl Outbound for TrojanOutbound {
             tokio::spawn(async move {
                 while let Some(data) = upstream_rx.recv().await {
                     let frame = build_udp_frame(&target, &data);
-                    if writer.write_all(&frame).await.is_err()
-                        || writer.flush().await.is_err()
-                    {
+                    if writer.write_all(&frame).await.is_err() || writer.flush().await.is_err() {
                         break;
                     }
                 }
@@ -347,7 +345,9 @@ impl Outbound for TrojanOutbound {
                 Err(_) => break,
             }
 
-            let _ = reply_tx.send((bytes::Bytes::from(data), src, spoofed_src)).await;
+            let _ = reply_tx
+                .send((bytes::Bytes::from(data), src, spoofed_src))
+                .await;
         }
 
         Ok(())

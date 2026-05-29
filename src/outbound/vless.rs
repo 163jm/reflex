@@ -370,9 +370,7 @@ impl Outbound for VlessOutbound {
             tokio::spawn(async move {
                 while let Some(data) = upstream_rx.recv().await {
                     let frame = vless_encode_udp_frame(&data);
-                    if writer.write_all(&frame).await.is_err()
-                        || writer.flush().await.is_err()
-                    {
+                    if writer.write_all(&frame).await.is_err() || writer.flush().await.is_err() {
                         break;
                     }
                 }
@@ -397,7 +395,9 @@ impl Outbound for VlessOutbound {
                 Ok(Err(e)) => return Err(e.into()),
                 Err(_) => break,
             }
-            let _ = reply_tx.send((bytes::Bytes::from(data), src, spoofed_src)).await;
+            let _ = reply_tx
+                .send((bytes::Bytes::from(data), src, spoofed_src))
+                .await;
         }
         Ok(())
     }

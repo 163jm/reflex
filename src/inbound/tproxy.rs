@@ -82,7 +82,9 @@ impl TProxyInbound {
             let socket = create_tproxy_udp_socket(bind)?;
             let tx = self.udp_tx.clone();
             let tag = tag.clone();
-            handles.push(tokio::spawn(async move { run_udp(socket, tx, tag, routing_mark).await }));
+            handles.push(tokio::spawn(async move {
+                run_udp(socket, tx, tag, routing_mark).await
+            }));
         }
 
         for h in handles {
@@ -272,7 +274,8 @@ async fn run_udp(
     info!(tag=%tag, addr=%local_addr, routing_mark=%routing_mark, "tproxy udp listener started");
     let async_fd = Arc::new(AsyncFd::new(socket)?);
     // (数据, 客户端地址, 伪造源地址=游戏服务器IP:port)
-    let (global_reply_tx, mut global_reply_rx) = mpsc::channel::<(Bytes, SocketAddr, SocketAddr)>(256);
+    let (global_reply_tx, mut global_reply_rx) =
+        mpsc::channel::<(Bytes, SocketAddr, SocketAddr)>(256);
 
     // 回包发送循环：照抄 sing-box tproxyPacketWriter 的做法
     // 新建一个 IP_TRANSPARENT socket，bind 到游戏服务器的 IP:port，
@@ -283,7 +286,9 @@ async fn run_udp(
         while let Some((data, client_addr, server_addr)) = global_reply_rx.recv().await {
             match tproxy_udp_writeback(&data, client_addr, server_addr, routing_mark) {
                 Ok(_) => {}
-                Err(e) => warn!(err=%e, client=%client_addr, server=%server_addr, "tproxy udp writeback error"),
+                Err(e) => {
+                    warn!(err=%e, client=%client_addr, server=%server_addr, "tproxy udp writeback error")
+                }
             }
         }
     });
@@ -367,7 +372,10 @@ async fn run_udp(
 
 // ── recvmsg（同步，在 readable 回调里调用）────────────────────────────────────
 
-fn recvmsg_with_dst(fd: RawFd, buf: &mut [u8]) -> Result<(usize, SocketAddr, SocketAddr), std::io::Error> {
+fn recvmsg_with_dst(
+    fd: RawFd,
+    buf: &mut [u8],
+) -> Result<(usize, SocketAddr, SocketAddr), std::io::Error> {
     const CMSG_SPACE: usize = 128;
     let mut cmsg_buf = [0u8; CMSG_SPACE];
     let mut src_storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
@@ -389,10 +397,8 @@ fn recvmsg_with_dst(fd: RawFd, buf: &mut [u8]) -> Result<(usize, SocketAddr, Soc
         return Err(std::io::Error::last_os_error());
     }
 
-    let src = sockaddr_storage_to_socketaddr(&src_storage)
-        .map_err(std::io::Error::other)?;
-    let dst = extract_original_dst_from_cmsg(&msg)
-        .map_err(std::io::Error::other)?;
+    let src = sockaddr_storage_to_socketaddr(&src_storage).map_err(std::io::Error::other)?;
+    let dst = extract_original_dst_from_cmsg(&msg).map_err(std::io::Error::other)?;
     Ok((n as usize, src, dst))
 }
 
@@ -428,12 +434,16 @@ fn sockaddr_storage_to_socketaddr(ss: &libc::sockaddr_storage) -> anyhow::Result
 
 fn tproxy_udp_writeback(
     data: &[u8],
-    client_addr: SocketAddr,  // 发给谁（客户端）
-    server_addr: SocketAddr,  // bind 到哪（游戏服务器IP:port，作为伪造源地址）
-    routing_mark: u32,        // SO_MARK，让新 socket 绕过 nftables TProxy 规则
+    client_addr: SocketAddr, // 发给谁（客户端）
+    server_addr: SocketAddr, // bind 到哪（游戏服务器IP:port，作为伪造源地址）
+    routing_mark: u32,       // SO_MARK，让新 socket 绕过 nftables TProxy 规则
 ) -> std::io::Result<()> {
     let sock = Socket::new(
-        if server_addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 },
+        if server_addr.is_ipv6() {
+            Domain::IPV6
+        } else {
+            Domain::IPV4
+        },
         Type::DGRAM,
         Some(Protocol::UDP),
     )?;

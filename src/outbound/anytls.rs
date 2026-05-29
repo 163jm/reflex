@@ -328,9 +328,11 @@ impl AnyTlsSession {
             let md5 = self.padding.md5();
             let settings = format!("v=2\nclient=reflex/anytls\npadding-md5={}", md5);
             // buffering=true，Frame 消息被写任务缓冲
-            let _ = self.write_tx.send(WriteMsg::Frame(
-                Self::build_frame(CMD_SETTINGS, 0, settings.as_bytes()),
-            ));
+            let _ = self.write_tx.send(WriteMsg::Frame(Self::build_frame(
+                CMD_SETTINGS,
+                0,
+                settings.as_bytes(),
+            )));
         }
 
         // 注册 stream 数据通道
@@ -340,9 +342,9 @@ impl AnyTlsSession {
         // cmdSYN 也加入缓冲（与 cmdSettings 合批，等 addr 写入触发 Flush）
         // 这样 pkt-0 = cmdSettings + cmdSYN + cmdPSH(addr) 合为一个 TLS 写调用，
         // 与 anytls 协议要求一致（"pkt1 包含 cmdSettings + cmdSYN + cmdPSH(addr)"）
-        let _ = self.write_tx.send(WriteMsg::Frame(
-            Self::build_frame(CMD_SYN, sid, &[]),
-        ));
+        let _ = self
+            .write_tx
+            .send(WriteMsg::Frame(Self::build_frame(CMD_SYN, sid, &[])));
         // 标记 buffering=false：下一次 write_data（写代理目标地址）会触发 Flush
         self.buffering.store(false, Ordering::Release);
 
@@ -555,7 +557,10 @@ async fn recv_loop<R: AsyncRead + Unpin + Send + 'static>(
                     if session.padding.update(&raw) {
                         debug!(seq = session.seq, "anytls padding scheme updated");
                     } else {
-                        warn!(seq = session.seq, "anytls padding scheme update failed (invalid)");
+                        warn!(
+                            seq = session.seq,
+                            "anytls padding scheme update failed (invalid)"
+                        );
                     }
                 }
             }
@@ -873,9 +878,7 @@ impl AnyTlsClient {
         *session.idle_since.lock().unwrap() = Some(Instant::now());
         let mut inner = self.inner.lock().await;
         // 按 seq 升序插入（pop 时取最大 seq，即最新的）
-        let pos = inner
-            .idle_sessions
-            .partition_point(|s| s.seq < session.seq);
+        let pos = inner.idle_sessions.partition_point(|s| s.seq < session.seq);
         inner.idle_sessions.insert(pos, session);
     }
 
@@ -889,7 +892,11 @@ impl AnyTlsClient {
         let total = idle.len();
 
         // 保留最新的 min_idle 个（索引最高的）
-        let keep_from = if total > min_idle { total - min_idle } else { 0 };
+        let keep_from = if total > min_idle {
+            total - min_idle
+        } else {
+            0
+        };
 
         let mut to_close: Vec<Arc<AnyTlsSession>> = Vec::new();
         for (i, s) in idle.iter().enumerate() {
@@ -990,9 +997,7 @@ fn write_socks_addr_to(buf: &mut Vec<u8>, target: &Target) {
     }
 }
 
-async fn read_uot_packet<R: AsyncRead + Unpin>(
-    reader: &mut R,
-) -> anyhow::Result<(Target, Bytes)> {
+async fn read_uot_packet<R: AsyncRead + Unpin>(reader: &mut R) -> anyhow::Result<(Target, Bytes)> {
     let mut atyp = [0u8; 1];
     reader.read_exact(&mut atyp).await?;
 
@@ -1051,8 +1056,7 @@ impl AnyTlsOutbound {
     }
 
     pub fn with_mark(self, mark: u32) -> Self {
-        let tls_config =
-            build_client_config(&self.config.tls).expect("TLS config rebuild failed");
+        let tls_config = build_client_config(&self.config.tls).expect("TLS config rebuild failed");
         let client = AnyTlsClient::new(self.config.clone(), tls_config, mark)
             .expect("client rebuild failed");
         Self {
@@ -1149,8 +1153,10 @@ impl Outbound for AnyTlsOutbound {
                 }
                 Ok(Err(e)) => {
                     let s = e.to_string();
-                    if s.contains("eof") || s.contains("EOF")
-                        || s.contains("closed") || s.contains("reset")
+                    if s.contains("eof")
+                        || s.contains("EOF")
+                        || s.contains("closed")
+                        || s.contains("reset")
                     {
                         break;
                     }

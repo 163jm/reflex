@@ -632,7 +632,10 @@ proxies:
             assert_eq!(c.plugin.as_deref(), Some("obfs-local"));
             let opts = c.plugin_opts.as_deref().unwrap_or("");
             assert!(opts.contains("obfs=http"), "opts was: {opts}");
-            assert!(opts.contains("obfs-host=www.example.com"), "opts was: {opts}");
+            assert!(
+                opts.contains("obfs-host=www.example.com"),
+                "opts was: {opts}"
+            );
         } else {
             panic!("expected Shadowsocks outbound");
         }

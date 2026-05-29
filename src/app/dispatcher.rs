@@ -517,7 +517,8 @@ async fn run_udp_session(
             let up_bytes = first_payload.len() as i64;
             // 用包装过的 reply_tx 统计下行字节
             let live_down_clone = live_down.clone();
-            let (counting_tx, mut counting_rx) = mpsc::channel::<(bytes::Bytes, SocketAddr, SocketAddr)>(64);
+            let (counting_tx, mut counting_rx) =
+                mpsc::channel::<(bytes::Bytes, SocketAddr, SocketAddr)>(64);
             let real_reply_tx = reply_tx.clone();
             tokio::spawn(async move {
                 use std::sync::atomic::Ordering;
@@ -540,10 +541,7 @@ async fn run_udp_session(
                 upstream_rx: Some(data_rx),
                 // 把 conn_guard 和 _guard 移进 packet，让出站持久 task 持有它们，
                 // 确保连接在 clash API 中保持可见，直到 socket 真正关闭。
-                lifetime_guards: vec![
-                    Box::new(conn_guard),
-                    Box::new(_guard),
-                ],
+                lifetime_guards: vec![Box::new(conn_guard), Box::new(_guard)],
             };
             if let Err(e) = ob.handle_udp(packet).await {
                 debug!(err=%e, outbound=%outbound_tag, "udp session: handle_udp error");
@@ -751,6 +749,10 @@ async fn handle_dns_udp(packet: InboundUdpPacket, dns_tx: DnsQueryTx) -> anyhow:
         .await
         .map_err(|_| anyhow::anyhow!("dns reply dropped"))?;
 
-    let _ = packet.session.reply_tx.send((resp, packet.src, packet.target.to_socket_addr_lossy())).await;
+    let _ = packet
+        .session
+        .reply_tx
+        .send((resp, packet.src, packet.target.to_socket_addr_lossy()))
+        .await;
     Ok(())
 }

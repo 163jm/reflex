@@ -362,7 +362,8 @@ impl SocksOutbound {
         };
         let udp = std::sync::Arc::new(tokio::net::UdpSocket::bind(local_bind).await?);
         apply_mark_to_udp(&udp, self.routing_mark)?;
-        udp.send_to(&build_dgram(&packet.target, &packet.data), relay_addr).await?;
+        udp.send_to(&build_dgram(&packet.target, &packet.data), relay_addr)
+            .await?;
 
         // 若有后续上行包，spawn task 持续封装并发送
         if let Some(mut upstream_rx) = packet.upstream_rx.take() {
@@ -384,11 +385,8 @@ impl SocksOutbound {
         let src = packet.src;
         let spoofed_src = packet.target.to_socket_addr_lossy();
 
-        while let Ok(Ok((n, _from))) = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            udp.recv_from(&mut buf),
-        )
-        .await
+        while let Ok(Ok((n, _from))) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), udp.recv_from(&mut buf)).await
         {
             match socks5_udp_strip_header(&buf[..n]) {
                 Ok(payload) => {

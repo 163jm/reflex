@@ -434,7 +434,8 @@ impl CompiledRule {
             to_action(&rule.outbound)
         };
 
-        let rule_display = if rule.private_ip && rule.ruleset.is_empty()
+        let rule_display = if rule.private_ip
+            && rule.ruleset.is_empty()
             && rule.domain.is_empty()
             && rule.domain_suffix.is_empty()
             && rule.domain_keyword.is_empty()
@@ -452,7 +453,10 @@ impl CompiledRule {
         } else if !rule.ip_cidr.is_empty() {
             ("IP-CIDR".to_string(), rule.ip_cidr.join(","))
         } else if let Some(nf) = rule.network {
-            ("NETWORK".to_string(), format!("{nf:?}").to_ascii_lowercase())
+            (
+                "NETWORK".to_string(),
+                format!("{nf:?}").to_ascii_lowercase(),
+            )
         } else if !rule.protocol.is_empty() {
             ("PROTOCOL".to_string(), rule.protocol.join(","))
         } else if !rule.inbound.is_empty() {
@@ -522,7 +526,8 @@ impl CompiledRule {
             !self.rulesets.is_empty() || self.addr_rs.is_some() || self.port_rs.is_some();
         if has_addr_rules || self.private_ip {
             let addr_hit = has_addr_rules && self.match_target(target);
-            let private_hit = self.private_ip && matches!(target, Target::Socket(addr) if is_private_ip(addr.ip()));
+            let private_hit = self.private_ip
+                && matches!(target, Target::Socket(addr) if is_private_ip(addr.ip()));
             if !addr_hit && !private_hit {
                 return false;
             }
@@ -1289,7 +1294,6 @@ mod tests {
         );
     }
 }
-
 
 #[cfg(test)]
 mod hijack_dns_tests {

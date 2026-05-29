@@ -203,7 +203,11 @@ impl Outbound for DirectOutbound {
                     Ok(Ok((n, _from))) => {
                         let data = bytes::Bytes::copy_from_slice(&buf[..n]);
                         let spoofed_src = dst; // 伪造源地址 = 游戏服务器 IP:port
-                        if reply_tx.send((data, client_src, spoofed_src)).await.is_err() {
+                        if reply_tx
+                            .send((data, client_src, spoofed_src))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }

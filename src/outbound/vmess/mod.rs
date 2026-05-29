@@ -261,9 +261,7 @@ impl Outbound for VmessOutbound {
             let (mut vmess_rd, mut vmess_wr) = tokio::io::split(vmess);
             tokio::spawn(async move {
                 while let Some(data) = upstream_rx.recv().await {
-                    if vmess_wr.write_all(&data).await.is_err()
-                        || vmess_wr.flush().await.is_err()
-                    {
+                    if vmess_wr.write_all(&data).await.is_err() || vmess_wr.flush().await.is_err() {
                         break;
                     }
                 }
