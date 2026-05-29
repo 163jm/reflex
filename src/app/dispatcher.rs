@@ -133,16 +133,30 @@ impl Dispatcher {
         while let Some(mut conn) = rx.recv().await {
             // ── FakeIP 反向查找（参照 sing-box route.go routeConnection）──────────
             // 若目标 IP 落在 FakeIP 段内，立即还原为域名目标，再进入路由匹配。
+            // 参照 sing-box：IP 在段内但 store 无记录时，视为致命错误断连，
+            // 并建议用户开启 experimental.cache_file.store_fakeip。
             if let Target::Socket(addr) = &conn.target {
                 let ip = addr.ip();
                 let port = addr.port();
-                if let Some(domain) = self.dns_resolver.lookup_fakeip(ip) {
-                    debug!(
-                        fakeip = %ip,
-                        domain = %domain,
-                        "fakeip reverse lookup: restoring domain target"
-                    );
-                    conn.target = Target::Domain(domain, port);
+                use crate::dns::FakeIpLookup;
+                match self.dns_resolver.lookup_fakeip(ip) {
+                    FakeIpLookup::Found(domain) => {
+                        debug!(
+                            fakeip = %ip,
+                            domain = %domain,
+                            "fakeip reverse lookup: restoring domain target"
+                        );
+                        conn.target = Target::Domain(domain, port);
+                    }
+                    FakeIpLookup::Missing => {
+                        tracing::warn!(
+                            fakeip = %ip,
+                            "fakeip reverse lookup: missing record, dropping connection; \
+                             enable experimental.cache_file.store_fakeip to persist mappings"
+                        );
+                        continue;
+                    }
+                    FakeIpLookup::NotFakeIp => {}
                 }
             }
 
@@ -303,13 +317,25 @@ impl Dispatcher {
                     if let Target::Socket(addr) = &packet.target {
                         let ip = addr.ip();
                         let port = addr.port();
-                        if let Some(domain) = self.dns_resolver.lookup_fakeip(ip) {
-                            debug!(
-                                fakeip = %ip,
-                                domain = %domain,
-                                "fakeip reverse lookup (udp): restoring domain target"
-                            );
-                            packet.target = Target::Domain(domain, port);
+                        use crate::dns::FakeIpLookup;
+                        match self.dns_resolver.lookup_fakeip(ip) {
+                            FakeIpLookup::Found(domain) => {
+                                debug!(
+                                    fakeip = %ip,
+                                    domain = %domain,
+                                    "fakeip reverse lookup (udp): restoring domain target"
+                                );
+                                packet.target = Target::Domain(domain, port);
+                            }
+                            FakeIpLookup::Missing => {
+                                tracing::warn!(
+                                    fakeip = %ip,
+                                    "fakeip reverse lookup (udp): missing record, dropping packet; \
+                                     enable experimental.cache_file.store_fakeip to persist mappings"
+                                );
+                                continue;
+                            }
+                            FakeIpLookup::NotFakeIp => {}
                         }
                     }
 

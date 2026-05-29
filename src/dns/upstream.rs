@@ -327,7 +327,7 @@ impl DnsUpstream {
             match &self.kind {
                 UpstreamKind::Rcode { action } => Ok(rcode_reply(&msg, *action)),
 
-                UpstreamKind::FakeIp { store } => Ok(store.reply(&msg)),
+                UpstreamKind::FakeIp { store } => store.reply(&msg),
 
                 // ── UDP ───────────────────────────────────────────────────────
                 UpstreamKind::Udp { addr } => {
@@ -1122,49 +1122,80 @@ impl FakeIpStore {
 
         if let (Some(ref cr), Some(ref cf)) = (&cache_reader, &cache_file) {
             if cf.store_fakeip {
-                match cr.load_all_fakeip() {
-                    Ok(records) => {
-                        let count = records.len();
-                        for (ip, domain) in records {
-                            match ip {
-                                std::net::IpAddr::V4(v4) => {
-                                    if inet4_net.is_some_and(|(s, e)| v4 >= s && v4 <= e) {
-                                        inner.addr_to_domain.insert(ip, domain.clone());
-                                        inner.domain_to_v4.insert(domain, v4);
-                                        if let Some(cur) = inner.inet4_current {
-                                            if v4 >= cur {
-                                                inner.inet4_current = Some(ipv4_next(v4));
+                // ── 参照 sing-box Store.Start()：检测 range 是否变化 ────────────
+                // 构造当前 range 的标记字符串（inet4_range|inet6_range）。
+                let current_range_tag = format!(
+                    "{}|{}",
+                    cfg.inet4_range.as_deref().unwrap_or(""),
+                    cfg.inet6_range.as_deref().unwrap_or(""),
+                );
+                let persisted_range_tag = cr.load_fakeip_range_tag();
+                let range_changed = persisted_range_tag
+                    .as_deref()
+                    .map(|t| t != current_range_tag)
+                    .unwrap_or(false); // 首次启动（无记录）= 无需重置
+
+                if range_changed {
+                    // range 发生变化：清空持久化数据，从头分配，防止旧 IP 记录污染。
+                    tracing::warn!(
+                        old_range = persisted_range_tag.as_deref().unwrap_or(""),
+                        new_range = %current_range_tag,
+                        "fakeip range changed, clearing persisted mappings"
+                    );
+                    cf.clear_fakeip();
+                    cf.store_fakeip_range_tag(&current_range_tag);
+                } else {
+                    // range 未变（或首次启动）：恢复持久化的 ip→domain 映射。
+                    match cr.load_all_fakeip() {
+                        Ok(records) => {
+                            let count = records.len();
+                            for (ip, domain) in records {
+                                match ip {
+                                    std::net::IpAddr::V4(v4) => {
+                                        if inet4_net.is_some_and(|(s, e)| v4 >= s && v4 <= e) {
+                                            inner.addr_to_domain.insert(ip, domain.clone());
+                                            inner.domain_to_v4.insert(domain, v4);
+                                            if let Some(cur) = inner.inet4_current {
+                                                if v4 >= cur {
+                                                    inner.inet4_current = Some(ipv4_next(v4));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    std::net::IpAddr::V6(v6) => {
+                                        if inet6_net.is_some_and(|(s, e)| v6 >= s && v6 <= e) {
+                                            inner.addr_to_domain.insert(ip, domain.clone());
+                                            inner.domain_to_v6.insert(domain, v6);
+                                            if let Some(cur) = inner.inet6_current {
+                                                if v6 >= cur {
+                                                    inner.inet6_current = Some(ipv6_next(v6));
+                                                }
                                             }
                                         }
                                     }
                                 }
-                                std::net::IpAddr::V6(v6) => {
-                                    if inet6_net.is_some_and(|(s, e)| v6 >= s && v6 <= e) {
-                                        inner.addr_to_domain.insert(ip, domain.clone());
-                                        inner.domain_to_v6.insert(domain, v6);
-                                        if let Some(cur) = inner.inet6_current {
-                                            if v6 >= cur {
-                                                inner.inet6_current = Some(ipv6_next(v6));
-                                            }
-                                        }
-                                    }
+                            }
+                            // 指针溢出 range 时回绕到 start+2（对齐 sing-box wrap-around）。
+                            if let Some((start, end)) = inet4_net {
+                                if inner.inet4_current.is_some_and(|c| c >= end) {
+                                    inner.inet4_current = Some(ipv4_next(ipv4_next(start)));
                                 }
                             }
-                        }
-                        if let Some((_, end)) = inet4_net {
-                            if inner.inet4_current.is_some_and(|c| c >= end) {
-                                inner.inet4_current = Some(ipv4_next(inet4_net.unwrap().0));
+                            if let Some((start, end)) = inet6_net {
+                                if inner.inet6_current.is_some_and(|c| c >= end) {
+                                    inner.inet6_current = Some(ipv6_next(ipv6_next(start)));
+                                }
+                            }
+                            tracing::info!(count, "restored fakeip mappings from cache");
+                            // 首次启动时（无 range tag 记录）写入当前 range，
+                            // 供下次启动做变化检测。
+                            if persisted_range_tag.is_none() {
+                                cf.store_fakeip_range_tag(&current_range_tag);
                             }
                         }
-                        if let Some((_, end)) = inet6_net {
-                            if inner.inet6_current.is_some_and(|c| c >= end) {
-                                inner.inet6_current = Some(ipv6_next(inet6_net.unwrap().0));
-                            }
+                        Err(e) => {
+                            tracing::warn!(err=%e, "failed to load fakeip from cache, starting fresh");
                         }
-                        tracing::info!(count, "restored fakeip mappings from cache");
-                    }
-                    Err(e) => {
-                        tracing::warn!(err=%e, "failed to load fakeip from cache, starting fresh");
                     }
                 }
             }
@@ -1246,52 +1277,69 @@ impl FakeIpStore {
         false
     }
 
-    pub fn reply(&self, query: &[u8]) -> Bytes {
+    /// 对外暴露 reply 结果，用 Result 区分「正常应答」和「不支持的查询类型」。
+    /// 参照 sing-box fakeip.Transport.Exchange()：非 A/AAAA 直接返回 Err，
+    /// 上层 DnsUpstream::query() 负责将 Err 向外传播（而非吞掉）。
+    pub fn reply(&self, query: &[u8]) -> anyhow::Result<Bytes> {
         use crate::dns::{extract_qname, extract_qtype, make_nxdomain};
 
         let qtype = match extract_qtype(query) {
             Some(t) => t,
-            None => return make_noerror_empty(query),
+            None => return Ok(make_noerror_empty(query)),
         };
+        // 参照 sing-box：仅支持 A(1) / AAAA(28)，其他类型直接报错，
+        // 让 DNS 路由层感知失败（而非静默返回空成功）。
         if qtype != 1 && qtype != 28 {
-            return make_noerror_empty(query);
+            anyhow::bail!("fakeip: only A/AAAA queries are supported, got qtype={qtype}");
         }
 
         let qname = match extract_qname(query) {
             Some(n) => n,
-            None => return make_noerror_empty(query),
+            None => return Ok(make_noerror_empty(query)),
         };
 
         if self.is_excluded(&qname) {
             tracing::debug!(domain=%qname, "fakeip: domain excluded, returning NXDOMAIN");
-            return make_nxdomain(query);
+            return Ok(make_nxdomain(query));
         }
 
         // 读取当前 strategy：0=PreferIpv4, 1=PreferIpv6, 2=Ipv4Only, 3=Ipv6Only
         let strat = self.strategy.load(std::sync::atomic::Ordering::Relaxed);
 
         if qtype == 1 {
-            // A 查询：Ipv6Only 时拒绝返回 IPv4 fakeip
+            // A 查询：Ipv6Only 时拒绝返回 IPv4 fakeip（参照 sing-box inet4Enabled 开关）
             if strat == 3 {
-                return make_noerror_empty(query);
+                return Ok(make_noerror_empty(query));
             }
-            match self.allocate_v4(&qname) {
+            Ok(match self.allocate_v4(&qname) {
                 Some(ip) => build_a_response(query, ip),
                 None => make_noerror_empty(query),
-            }
+            })
         } else {
             // AAAA 查询：Ipv4Only 时拒绝返回 IPv6 fakeip
             if strat == 2 {
-                return make_noerror_empty(query);
+                return Ok(make_noerror_empty(query));
             }
-            match self.allocate_v6(&qname) {
+            Ok(match self.allocate_v6(&qname) {
                 Some(ip) => build_aaaa_response(query, ip),
                 None => make_noerror_empty(query),
-            }
+            })
         }
     }
 
     fn allocate_v4(&self, domain: &str) -> Option<Ipv4Addr> {
+        // 无锁快速路径：域名已存在则直接返回（参照 sing-box Create() 锁外先检查）。
+        {
+            let inner = self.inner.lock().unwrap();
+            if let Some(&existing) = inner.domain_to_v4.get(domain) {
+                drop(inner);
+                if let Some(ref cf) = self.cache_file {
+                    cf.touch_fakeip_entry(std::net::IpAddr::V4(existing));
+                }
+                return Some(existing);
+            }
+        }
+        // 加锁后 double-check（防止并发重复分配）。
         let mut inner = self.inner.lock().unwrap();
         if let Some(&existing) = inner.domain_to_v4.get(domain) {
             if let Some(ref cf) = self.cache_file {
@@ -1301,10 +1349,13 @@ impl FakeIpStore {
         }
         let (start, end) = self.inet4_net?;
         let current = inner.inet4_current?;
-        let next = if ipv4_next(current) >= end {
-            ipv4_next(start)
+        // 参照 sing-box：next == last（广播地址）或超出 range 时从 start+2 重绕，
+        // 跳过网络地址（start+1）以避免分配到可能被保留的地址。
+        let candidate = ipv4_next(current);
+        let next = if candidate >= end {
+            ipv4_next(ipv4_next(start))
         } else {
-            ipv4_next(current)
+            candidate
         };
         inner.inet4_current = Some(next);
         if let Some(old_domain) = inner.addr_to_domain.remove(&std::net::IpAddr::V4(next)) {
@@ -1321,6 +1372,18 @@ impl FakeIpStore {
     }
 
     fn allocate_v6(&self, domain: &str) -> Option<Ipv6Addr> {
+        // 无锁快速路径。
+        {
+            let inner = self.inner.lock().unwrap();
+            if let Some(&existing) = inner.domain_to_v6.get(domain) {
+                drop(inner);
+                if let Some(ref cf) = self.cache_file {
+                    cf.touch_fakeip_entry(std::net::IpAddr::V6(existing));
+                }
+                return Some(existing);
+            }
+        }
+        // double-check after lock。
         let mut inner = self.inner.lock().unwrap();
         if let Some(&existing) = inner.domain_to_v6.get(domain) {
             if let Some(ref cf) = self.cache_file {
@@ -1330,10 +1393,12 @@ impl FakeIpStore {
         }
         let (start, end) = self.inet6_net?;
         let current = inner.inet6_current?;
-        let next = if ipv6_next(current) >= end {
-            ipv6_next(start)
+        // 参照 sing-box：start+2 重绕。
+        let candidate = ipv6_next(current);
+        let next = if candidate >= end {
+            ipv6_next(ipv6_next(start))
         } else {
-            ipv6_next(current)
+            candidate
         };
         inner.inet6_current = Some(next);
         if let Some(old_domain) = inner.addr_to_domain.remove(&std::net::IpAddr::V6(next)) {
@@ -1364,7 +1429,10 @@ fn build_ip_response(query: &[u8], rtype: u16, rdata: &[u8]) -> Bytes {
     if query.len() < 12 {
         return make_noerror_empty(query);
     }
-    const TTL: u32 = 1;
+    // 参照 sing-box constant.DefaultDNSTTL = 600。
+    // fakeip 应答幂等（同域名始终同 IP），600s TTL 可减少重复 DNS 查询，
+    // 同时 fakeip store 本身保证一致性，缓存不会造成地址错位。
+    const TTL: u32 = 600;
     let mut resp = Vec::with_capacity(query.len() + 16 + rdata.len());
     resp.extend_from_slice(&query[..2]);
     resp.extend_from_slice(&[0x81, 0x80]);
@@ -1536,7 +1604,7 @@ mod tests {
     fn fakeip_a_query_returns_valid_ip() {
         let store = new_store_v4();
         let q = make_fakeip_query("example.com", 1);
-        let resp = store.reply(&q);
+        let resp = store.reply(&q).unwrap();
         assert_eq!(resp[3] & 0x0F, 0);
         assert_eq!(u16::from_be_bytes([resp[6], resp[7]]), 1);
     }
@@ -1545,41 +1613,43 @@ mod tests {
     fn fakeip_idempotent_same_domain() {
         let store = new_store_v4();
         let q = make_fakeip_query("same.example.com", 1);
-        let r1 = store.reply(&q);
-        let r2 = store.reply(&q);
+        let r1 = store.reply(&q).unwrap();
+        let r2 = store.reply(&q).unwrap();
         assert_eq!(&r1[r1.len() - 4..], &r2[r2.len() - 4..]);
     }
 
     #[test]
     fn fakeip_different_domains_get_different_ips() {
         let store = new_store_v4();
-        let r1 = store.reply(&make_fakeip_query("a.com", 1));
-        let r2 = store.reply(&make_fakeip_query("b.com", 1));
+        let r1 = store.reply(&make_fakeip_query("a.com", 1)).unwrap();
+        let r2 = store.reply(&make_fakeip_query("b.com", 1)).unwrap();
         assert_ne!(&r1[r1.len() - 4..], &r2[r2.len() - 4..]);
     }
 
     #[test]
     fn fakeip_reverse_lookup() {
         let store = new_store_v4();
-        let resp = store.reply(&make_fakeip_query("lookup.example.com", 1));
+        let resp = store.reply(&make_fakeip_query("lookup.example.com", 1)).unwrap();
         let ip_bytes: [u8; 4] = resp[resp.len() - 4..].try_into().unwrap();
         let ip = std::net::IpAddr::V4(Ipv4Addr::from(ip_bytes));
         assert!(store.contains(ip));
         assert_eq!(store.lookup(ip).as_deref(), Some("lookup.example.com"));
     }
 
+    /// 参照 sing-box：非 A/AAAA 查询由 fakeip transport 返回 error，而非静默 NOERROR-empty。
     #[test]
-    fn fakeip_non_ip_query_returns_noerror_empty() {
+    fn fakeip_non_ip_query_returns_error() {
         let store = new_store_v4();
-        let resp = store.reply(&make_fakeip_query("txt.example.com", 16));
-        assert_eq!(resp[3] & 0x0F, 0);
-        assert_eq!(u16::from_be_bytes([resp[6], resp[7]]), 0);
+        let result = store.reply(&make_fakeip_query("txt.example.com", 16));
+        assert!(result.is_err(), "expected Err for non-A/AAAA qtype, got Ok");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("only A/AAAA"), "unexpected error message: {msg}");
     }
 
     #[test]
     fn fakeip_aaaa_no_inet6() {
         let store = new_store_v4();
-        let resp = store.reply(&make_fakeip_query("v6.example.com", 28));
+        let resp = store.reply(&make_fakeip_query("v6.example.com", 28)).unwrap();
         assert_eq!(resp[3] & 0x0F, 0);
         assert_eq!(u16::from_be_bytes([resp[6], resp[7]]), 0);
     }
@@ -1593,7 +1663,7 @@ mod tests {
             exclude_domain_suffix: vec![],
         })
         .unwrap();
-        let resp = store.reply(&make_fakeip_query("v6only.example.com", 28));
+        let resp = store.reply(&make_fakeip_query("v6only.example.com", 28)).unwrap();
         assert_eq!(resp[3] & 0x0F, 0);
         assert_eq!(u16::from_be_bytes([resp[6], resp[7]]), 1);
         let ip_bytes: [u8; 16] = resp[resp.len() - 16..].try_into().unwrap();

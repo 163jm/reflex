@@ -62,6 +62,9 @@ enum WriteOp {
         tag: String,
         data: Vec<u8>,
     },
+    /// 参照 sing-box FakeIPReset()：fakeip range 发生变化时清空持久化表，
+    /// 防止旧 range 的 IP 记录污染新 range 的分配。
+    ClearFakeip,
     Cleanup,
     Shutdown,
 }
@@ -109,6 +112,26 @@ impl CacheFile {
         let _ = self.write_tx.send(WriteOp::StoreRuleset {
             tag: tag.to_string(),
             data,
+        });
+    }
+
+    /// 参照 sing-box FakeIPReset()：清空 fakeip 持久化表（非阻塞）。
+    /// 当检测到 fakeip range 配置变化时调用，避免旧 IP 映射污染新分配。
+    pub fn clear_fakeip(&self) {
+        if !self.store_fakeip {
+            return;
+        }
+        let _ = self.write_tx.send(WriteOp::ClearFakeip);
+    }
+
+    /// 持久化 fakeip range 标记，供下次启动时做 range 变化检测。
+    pub fn store_fakeip_range_tag(&self, tag: &str) {
+        if !self.store_fakeip {
+            return;
+        }
+        let _ = self.write_tx.send(WriteOp::StoreSelected {
+            group: "__fakeip_range__".to_string(),
+            selected: tag.to_string(),
         });
     }
 
@@ -186,6 +209,15 @@ impl CacheFileReader {
             }
         }
         Ok(result)
+    }
+
+    /// 读取上次持久化的 fakeip range 标记（inet4_range|inet6_range 拼接字符串）。
+    /// 参照 sing-box Store.Start()：range 变化时需重置持久化数据。
+    pub fn load_fakeip_range_tag(&self) -> Option<String> {
+        let rtx = self.db.begin_read().ok()?;
+        let table = rtx.open_table(SELECTED_TABLE).ok()?;
+        let guard = table.get("__fakeip_range__").ok()??;
+        Some(guard.value().to_string())
     }
 }
 
@@ -356,6 +388,13 @@ fn apply_op(db: &Database, op: WriteOp) -> anyhow::Result<()> {
             wtx.commit()?;
         }
         WriteOp::Cleanup | WriteOp::Shutdown => {}
+        WriteOp::ClearFakeip => {
+            let wtx = db.begin_write()?;
+            // delete_table 返回 Result<bool>（bool 表示表是否存在，不关心）。
+            // 用 .map(|_| ()) 丢弃 bool，再用 ? 传播 Error。
+            wtx.delete_table(FAKEIP_TABLE).map(|_| ())?;
+            wtx.commit()?;
+        }
     }
     Ok(())
 }

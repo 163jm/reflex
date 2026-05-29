@@ -30,6 +30,19 @@ use crate::{
 use cache::{CacheResult, DnsCache, InflightResult};
 use upstream::DnsUpstream;
 
+// ── FakeIP 反向查找结果 ───────────────────────────────────────────────────────
+
+/// 参照 sing-box route.go routeConnection 的三路分支：
+/// - IP 不在任何 fakeip 段   → NotFakeIp（正常路由）
+/// - IP 在段内且有 store 记录 → Found(domain)（恢复域名后路由）
+/// - IP 在段内但 store 无记录 → Missing（应断连，建议开启 store_fakeip）
+#[derive(Debug)]
+pub enum FakeIpLookup {
+    NotFakeIp,
+    Found(String),
+    Missing,
+}
+
 // ── DNS 解析器 ────────────────────────────────────────────────────────────────
 
 pub struct DnsResolver {
@@ -193,16 +206,22 @@ impl DnsResolver {
     }
 
     /// 查询 FakeIP 地址是否落在已知的 FakeIP 段内，若是则反向查找对应的域名。
-    /// 参照 sing-box route.go：routeConnection 在路由前自动还原 FakeIP 地址为域名。
-    pub fn lookup_fakeip(&self, addr: std::net::IpAddr) -> Option<String> {
+    /// 参照 sing-box route.go routeConnection：
+    ///   - IP 不在任何 fakeip 段 → `FakeIpLookup::NotFakeIp`
+    ///   - IP 在段内且有记录    → `FakeIpLookup::Found(domain)`
+    ///   - IP 在段内但无记录   → `FakeIpLookup::Missing`（应断连，建议开启 cache_file）
+    pub fn lookup_fakeip(&self, addr: std::net::IpAddr) -> FakeIpLookup {
         for upstream in self.upstreams.values() {
             if let upstream::UpstreamKind::FakeIp { store } = &upstream.kind {
                 if store.contains(addr) {
-                    return store.lookup(addr);
+                    return match store.lookup(addr) {
+                        Some(domain) => FakeIpLookup::Found(domain),
+                        None => FakeIpLookup::Missing,
+                    };
                 }
             }
         }
-        None
+        FakeIpLookup::NotFakeIp
     }
 
     /// 同步更新所有 fakeip upstream 的 strategy。
