@@ -172,6 +172,7 @@ fn set_outbound_tag(ob: &mut OutboundConfig, tag: &str) {
         OutboundConfig::Hysteria2(c) => c.tag = tag.to_string(),
         OutboundConfig::Tuic(c) => c.tag = tag.to_string(),
         OutboundConfig::Trojan(c) => c.tag = tag.to_string(),
+        OutboundConfig::AnyTls(c) => c.tag = tag.to_string(),
         OutboundConfig::Direct(c) => c.tag = tag.to_string(),
         OutboundConfig::Block(c) => c.tag = tag.to_string(),
         OutboundConfig::Socks(c) => c.tag = tag.to_string(),
