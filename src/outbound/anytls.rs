@@ -240,7 +240,7 @@ pub struct AnyTlsSession {
 
 impl AnyTlsSession {
     /// 创建 Session 并启动收发任务
-    pub fn new(
+    pub(crate) fn new(
         conn: Box<dyn crate::outbound::AsyncReadWrite>,
         padding: Arc<ClientPadding>,
         seq: u64,
