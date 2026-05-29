@@ -8,11 +8,6 @@ on:
         required: true
         default: 'v0.1.'
         type: string
-      prerelease:
-        description: "Mark as pre-release"
-        required: false
-        default: false
-        type: boolean
 
 env:
   CARGO_TERM_COLOR: always
@@ -197,7 +192,7 @@ jobs:
         with:
           tag_name:   ${{ github.event.inputs.version }}
           name:       "reflex ${{ github.event.inputs.version }}"
-          prerelease: ${{ github.event.inputs.prerelease }}
+          prerelease: false
           draft:      false
           files: |
             artifacts/reflex-linux-aarch64/reflex-linux-aarch64
