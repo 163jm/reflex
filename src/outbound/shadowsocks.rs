@@ -25,6 +25,7 @@
 //! ```
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 
 use aes_gcm::{
     aead::{AeadInPlace, KeyInit},
@@ -36,12 +37,17 @@ use hkdf::Hkdf;
 use md5::{Digest as _, Md5};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::{client_async_tls_with_config, MaybeTlsStream, WebSocketStream};
 use tracing::debug;
 
 use crate::{
-    config::outbound::ShadowsocksOutboundConfig,
+    config::outbound::{ShadowsocksOutboundConfig, WsTransportConfig},
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
-    outbound::{apply_mark_to_tcp, apply_mark_to_udp, set_tcp_opts, Outbound, OutboundStatus},
+    outbound::{
+        apply_mark_to_tcp, apply_mark_to_udp, set_tcp_opts, tls::build_client_config, Outbound,
+        OutboundStatus,
+    },
 };
 
 // ── 加密方法 ──────────────────────────────────────────────────────────────────
@@ -618,6 +624,8 @@ pub struct ShadowsocksOutbound {
     /// 传统 AEAD：EVP_BytesToKey 派生的 master key；
     /// AEAD-2022：base64 解码的 PSK。
     key_material: Vec<u8>,
+    /// TLS 客户端配置（WS over TLS 时使用）
+    tls_config: Arc<rustls::ClientConfig>,
     /// 全局 SO_MARK（来自 global.routing_mark），0 表示不设置
     routing_mark: u32,
 }
@@ -644,10 +652,20 @@ impl ShadowsocksOutbound {
             evp_bytes_to_key(config.password.as_bytes(), method.key_len())
         };
 
+        // WS 传输需要 TLS 配置；即使当前未启用 TLS，也预先构建（使用空 TlsConfig 即可）
+        let tls_cfg_source = config.tls.as_ref();
+        use crate::config::outbound::TlsConfig;
+        let dummy_tls;
+        let tls_config = build_client_config(tls_cfg_source.unwrap_or_else(|| {
+            dummy_tls = TlsConfig::default();
+            &dummy_tls
+        }))?;
+
         Ok(Self {
             config,
             method,
             key_material,
+            tls_config,
             routing_mark: 0,
         })
     }
@@ -760,6 +778,128 @@ impl ShadowsocksOutbound {
             ss_wrap_xhttp(stream, self.method, subkey, salt, first_payload).await?,
         ))
     }
+
+    /// 通过 WebSocket 传输建立 Shadowsocks 连接，返回双工异步 IO。
+    /// SS AEAD 帧封装复用已有的 `SsXhttpStream` 泥型（它对泛型流就是对泛型流）。
+    async fn connect_ss_ws(
+        &self,
+        target: &Target,
+    ) -> anyhow::Result<Box<dyn crate::outbound::AsyncReadWrite>> {
+        use crate::config::outbound::ShadowsocksTransportConfig;
+        use tokio_tungstenite::tungstenite::http::header::HOST;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let ws_cfg = match &self.config.transport {
+            Some(ShadowsocksTransportConfig::Ws(cfg)) => cfg,
+            _ => anyhow::bail!("connect_ss_ws called without ws config"),
+        };
+
+        let server = &self.config.server;
+        let port = self.config.server_port;
+        let tls_enabled = self.config.tls.as_ref().map_or(false, |t| t.enabled);
+        let sni = self
+            .config
+            .tls
+            .as_ref()
+            .and_then(|t| t.server_name.as_deref())
+            .unwrap_or(server.as_str());
+
+        let addr: std::net::SocketAddr = tokio::net::lookup_host(format!("{server}:{port}"))
+            .await?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("DNS failed for {server}"))?;
+
+        let tcp = TcpStream::connect(addr).await?;
+        set_tcp_opts(&tcp)?;
+        apply_mark_to_tcp(&tcp, self.routing_mark)?;
+
+        let scheme = if tls_enabled { "wss" } else { "ws" };
+        let url = format!("{scheme}://{sni}{}", ws_cfg.path);
+        let mut request = url.into_client_request()?;
+        for (k, v) in &ws_cfg.headers {
+            request.headers_mut().insert(
+                k.parse::<tokio_tungstenite::tungstenite::http::header::HeaderName>()?,
+                HeaderValue::from_str(v)?,
+            );
+        }
+        if !ws_cfg.headers.contains_key("Host") {
+            request
+                .headers_mut()
+                .insert(HOST, HeaderValue::from_str(sni)?);
+        }
+
+        let connector = if tls_enabled {
+            Some(tokio_tungstenite::Connector::Rustls(
+                self.tls_config.clone(),
+            ))
+        } else {
+            None
+        };
+
+        let (ws_stream, _) =
+            client_async_tls_with_config(request, tcp, None, connector).await?;
+
+        // 将 WS 流包装成 AsyncRead+AsyncWrite，复用 SsXhttpStream 做 AEAD 层
+        // WsRawStream 在 vmess 模块内部，这里内联实现一个轻量版本
+        let (ws_sink, ws_source) = futures_util::StreamExt::split(ws_stream);
+        // 用 channel 把 Sink+Stream 转为统一的 AsyncRead+AsyncWrite
+        let (tx_read, rx_read) = tokio::sync::mpsc::channel::<bytes::Bytes>(64);
+        let (tx_write, mut rx_write) = tokio::sync::mpsc::channel::<bytes::Bytes>(64);
+
+        // 读半：ws -> channel
+        tokio::spawn(async move {
+            use futures_util::StreamExt;
+            let mut src = ws_source;
+            while let Some(Ok(msg)) = src.next().await {
+                let data = match msg {
+                    Message::Binary(d) => bytes::Bytes::from(d),
+                    Message::Close(_) => break,
+                    _ => continue,
+                };
+                if tx_read.send(data).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // 写半：channel -> ws
+        tokio::spawn(async move {
+            use futures_util::SinkExt;
+            let mut sink = ws_sink;
+            while let Some(data) = rx_write.recv().await {
+                if sink
+                    .send(Message::Binary(data.to_vec()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            let _ = sink.close().await;
+        });
+
+        // 将两个 channel 包装成 WsChannelStream
+        let ws_io = WsChannelStream {
+            reader: tokio_stream::wrappers::ReceiverStream::new(rx_read),
+            writer: tx_write,
+            read_buf: bytes::Bytes::new(),
+        };
+
+        let first_payload = encode_target(target);
+
+        if self.method == Method::None {
+            use tokio::io::AsyncWriteExt;
+            let mut boxed: Box<dyn crate::outbound::AsyncReadWrite> = Box::new(ws_io);
+            boxed.write_all(&first_payload).await?;
+            return Ok(boxed);
+        }
+
+        let salt = self.random_salt();
+        let subkey = self.derive_subkey(&salt);
+        Ok(Box::new(
+            ss_wrap_xhttp(ws_io, self.method, subkey, salt, first_payload).await?,
+        ))
+    }
 }
 
 #[async_trait::async_trait]
@@ -792,7 +932,16 @@ impl Outbound for ShadowsocksOutbound {
             return Ok((bytes_up, bytes_dn));
         }
 
-        // WebSocket 传输模式（预留，暂不实现——可扩展）
+        // WebSocket 传输模式
+        if matches!(
+            &self.config.transport,
+            Some(ShadowsocksTransportConfig::Ws(_))
+        ) {
+            let io = self.connect_ss_ws(&conn.target).await?;
+            let (bytes_up, bytes_dn) = crate::outbound::relay(conn.stream, io).await;
+            return Ok((bytes_up, bytes_dn));
+        }
+
         // 裸 TCP 模式（原有实现）
         let (ss_rd, ss_wr) = self.connect_ss(&conn.target).await?;
         Ok(relay_ss(conn.stream, ss_rd, ss_wr).await)
@@ -887,5 +1036,78 @@ impl Outbound for ShadowsocksOutbound {
             }
         }
         Ok(())
+    }
+}
+
+// ── WsChannelStream：将 WS channel 对封装为 AsyncRead+AsyncWrite ──────────────
+
+use futures_util::Stream;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+struct WsChannelStream {
+    reader: tokio_stream::wrappers::ReceiverStream<bytes::Bytes>,
+    writer: tokio::sync::mpsc::Sender<bytes::Bytes>,
+    read_buf: bytes::Bytes,
+}
+
+impl tokio::io::AsyncRead for WsChannelStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if !this.read_buf.is_empty() {
+            let n = buf.remaining().min(this.read_buf.len());
+            buf.put_slice(&this.read_buf[..n]);
+            this.read_buf = this.read_buf.slice(n..);
+            return Poll::Ready(Ok(()));
+        }
+        match Pin::new(&mut this.reader).poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => Poll::Ready(Ok(())),
+            Poll::Ready(Some(chunk)) => {
+                let n = buf.remaining().min(chunk.len());
+                buf.put_slice(&chunk[..n]);
+                if n < chunk.len() {
+                    this.read_buf = chunk.slice(n..);
+                }
+                Poll::Ready(Ok(()))
+            }
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for WsChannelStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        match this.writer.try_send(bytes::Bytes::copy_from_slice(data)) {
+            Ok(()) => Poll::Ready(Ok(data.len())),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                let tx = this.writer.clone();
+                let waker = cx.waker().clone();
+                tokio::spawn(async move {
+                    let _ = tx.reserve().await;
+                    waker.wake();
+                });
+                Poll::Pending
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Poll::Ready(Err(
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "ws channel closed"),
+            )),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
     }
 }
