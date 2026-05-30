@@ -38,11 +38,12 @@ use md5::{Digest as _, Md5};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::{client_async_tls_with_config, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::client_async_tls_with_config;
 use tracing::debug;
 
 use crate::{
-    config::outbound::{ShadowsocksOutboundConfig, WsTransportConfig},
+    config::outbound::ShadowsocksOutboundConfig,
     inbound::{InboundTcpStream, InboundUdpPacket, Target},
     outbound::{
         apply_mark_to_tcp, apply_mark_to_udp, set_tcp_opts, tls::build_client_config, Outbound,
@@ -653,13 +654,11 @@ impl ShadowsocksOutbound {
         };
 
         // WS 传输需要 TLS 配置；即使当前未启用 TLS，也预先构建（使用空 TlsConfig 即可）
-        let tls_cfg_source = config.tls.as_ref();
         use crate::config::outbound::TlsConfig;
-        let dummy_tls;
-        let tls_config = build_client_config(tls_cfg_source.unwrap_or_else(|| {
-            dummy_tls = TlsConfig::default();
-            &dummy_tls
-        }))?;
+        let tls_config = {
+            let dummy = TlsConfig::default();
+            build_client_config(config.tls.as_ref().unwrap_or(&dummy))?
+        };
 
         Ok(Self {
             config,
